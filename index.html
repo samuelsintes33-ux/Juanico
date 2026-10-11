@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="es" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Almacén</title>
+  <meta name="description" content="Gestión sencilla de almacén e inventario, sin conexión.">
+  <meta name="theme-color" content="#0f766e">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Almacén">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/png" href="icon-192.png">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+  <script>
+    /* Aplica tema y tamaño de texto guardados antes de pintar (evita parpadeos).
+       Solo son preferencias visuales; el inventario vive en IndexedDB. */
+    (function () {
+      try {
+        var t = localStorage.getItem('almacen-pref-theme') || 'system';
+        var dark = t === 'dark' || (t === 'system' && window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches);
+        document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+        var fs = parseInt(localStorage.getItem('almacen-pref-fontscale') || '100', 10);
+        if (fs >= 80 && fs <= 150) document.documentElement.style.setProperty('--fs', String(fs / 100));
+      } catch (e) { /* sin preferencias guardadas */ }
+    })();
+  </script>
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <svg class="logo" viewBox="0 0 48 48" aria-hidden="true" focusable="false">
+        <polygon points="24,6 40,15 24,24 8,15" fill="var(--primary)" opacity=".55"/>
+        <polygon points="8,15 24,24 24,42 8,33" fill="var(--primary)" opacity=".8"/>
+        <polygon points="40,15 24,24 24,42 40,33" fill="var(--primary)"/>
+        <polygon points="16,10.5 32,19.5 28,21.8 12,12.8" fill="#fff" opacity=".75"/>
+      </svg>
+      <h1 id="screen-title">Almacén</h1>
+      <span id="update-slot"></span>
+    </header>
+
+    <main id="main">
+      <!-- ALMACÉN -->
+      <section id="view-almacen" class="view" aria-labelledby="screen-title">
+        <div id="backup-reminder"></div>
+        <div class="toolbar">
+          <div class="search-wrap">
+            <input id="search" type="search" inputmode="search" placeholder="Buscar por nombre, marca o código" autocomplete="off" aria-label="Buscar productos">
+          </div>
+          <button id="btn-filters" class="btn secondary" type="button" aria-expanded="false" aria-controls="filters-panel">Filtros</button>
+        </div>
+        <div id="filters-panel" class="filters card" hidden>
+          <label class="field"><span>Categoría</span>
+            <select id="f-category"></select></label>
+          <label class="field"><span>Subcategoría</span>
+            <select id="f-sub"></select></label>
+          <label class="field"><span>Ordenar por</span>
+            <select id="f-sort">
+              <option value="name">Nombre</option>
+              <option value="brand">Marca</option>
+              <option value="category">Categoría</option>
+              <option value="created">Más recientes primero</option>
+            </select></label>
+          <label class="field"><span>Mostrar</span>
+            <select id="f-status">
+              <option value="active">Productos activos</option>
+              <option value="archived">Solo archivados</option>
+              <option value="all">Activos y archivados</option>
+            </select></label>
+          <button id="btn-clear-filters" class="btn ghost" type="button">Quitar filtros</button>
+        </div>
+        <div class="list-head">
+          <span id="count-label" class="muted"></span>
+          <button id="btn-categories" class="btn ghost small" type="button">Categorías y precios</button>
+        </div>
+        <div id="product-list" class="list" aria-live="polite"></div>
+        <div id="more-wrap" class="center" hidden>
+          <button id="btn-more" class="btn secondary" type="button">Mostrar más</button>
+        </div>
+
+        <section id="gallery-section" class="gallery-section" aria-labelledby="gallery-title"></section>
+      </section>
+
+      <!-- MOVIMIENTOS -->
+      <section id="view-movimientos" class="view" aria-labelledby="screen-title" hidden>
+        <div class="toolbar">
+          <div class="search-wrap">
+            <input id="mv-search" type="search" inputmode="search" placeholder="Buscar por producto, marca o nota" autocomplete="off" aria-label="Buscar movimientos">
+          </div>
+        </div>
+        <div class="seg" role="group" aria-label="Tipo de movimiento" id="mv-types">
+          <button type="button" data-type="" aria-pressed="true">Todos</button>
+          <button type="button" data-type="entrada" aria-pressed="false">Entradas</button>
+          <button type="button" data-type="salida" aria-pressed="false">Salidas</button>
+          <button type="button" data-type="ajuste" aria-pressed="false">Ajustes</button>
+        </div>
+        <div class="row2 dates">
+          <label class="field"><span>Desde</span><input id="mv-from" type="date"></label>
+          <label class="field"><span>Hasta</span><input id="mv-to" type="date"></label>
+        </div>
+        <div id="mv-product-chip"></div>
+        <div id="mv-list" class="list" aria-live="polite"></div>
+        <div id="mv-more-wrap" class="center" hidden>
+          <button id="mv-more" class="btn secondary" type="button">Mostrar más</button>
+        </div>
+      </section>
+
+      <!-- CONFIGURACIÓN -->
+      <section id="view-config" class="view" aria-labelledby="screen-title" hidden></section>
+    </main>
+
+    <button id="fab-add" class="fab" type="button" aria-label="Añadir producto">
+      <span aria-hidden="true">+</span> Producto
+    </button>
+
+    <nav class="bottom-nav" aria-label="Secciones principales">
+      <button type="button" data-tab="almacen" aria-current="page">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9.5 12 4l9 5.5V20a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M9 21v-7h6v7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+        <span>Almacén</span>
+      </button>
+      <button type="button" data-tab="movimientos">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4v14m0 0-3-3m3 3 3-3M17 20V6m0 0-3 3m3-3 3 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>Movimientos</span>
+      </button>
+      <button type="button" data-tab="config">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        <span>Configuración</span>
+      </button>
+    </nav>
+  </div>
+
+  <div id="toasts" popover="manual" role="status" aria-live="polite"></div>
+  <div id="fatal" class="fatal" hidden></div>
+
+  <noscript>
+    <div class="fatal">Esta aplicación necesita JavaScript para funcionar.</div>
+  </noscript>
+
+  <script src="database.js"></script>
+  <script src="inventory.js"></script>
+  <script src="categories.js"></script>
+  <script src="gallery.js"></script>
+  <script src="lists.js"></script>
+  <script src="settings.js"></script>
+  <script src="sync.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
