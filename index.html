@@ -50,6 +50,7 @@
           </div>
           <button id="btn-filters" class="btn secondary" type="button" aria-expanded="false" aria-controls="filters-panel">Filtros</button>
         </div>
+        <div class="seg mode-seg" id="mode-seg" role="group" aria-label="Modo"></div>
         <div id="filters-panel" class="filters card" hidden>
           <label class="field"><span>Categoría</span>
             <select id="f-category"></select></label>
@@ -74,6 +75,8 @@
           <span id="count-label" class="muted"></span>
           <button id="btn-categories" class="btn ghost small" type="button">Categorías y precios</button>
         </div>
+        <div id="browse-bar"></div>
+        <div id="browse-tiles" class="tiles"></div>
         <div id="product-list" class="list" aria-live="polite"></div>
         <div id="more-wrap" class="center" hidden>
           <button id="btn-more" class="btn secondary" type="button">Mostrar más</button>
@@ -110,6 +113,8 @@
       <section id="view-config" class="view" aria-labelledby="screen-title" hidden></section>
     </main>
 
+    <div id="cart-bar" class="cart-bar" hidden></div>
+
     <button id="fab-add" class="fab" type="button" aria-label="Añadir producto">
       <span aria-hidden="true">+</span> Producto
     </button>
@@ -144,6 +149,7 @@
   <script src="lists.js"></script>
   <script src="settings.js"></script>
   <script src="sync.js"></script>
+  <script src="cart.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

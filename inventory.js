@@ -176,6 +176,8 @@
       note: f.note || '',
       initial: !!f.initial,
       estimated: !!f.estimated,
+      orderId: f.orderId || null,
+      party: f.party || '',
       createdAt: f.createdAt,
     };
   }
@@ -406,6 +408,55 @@
     });
   }
 
+  /* Pedido: varias entradas o salidas a la vez, en UNA transacción (todo o nada).
+     input: { type:'entrada'|'salida', items:[{productId, amount}], party, note, opId }
+     opId identifica el pedido: si llega repetido (doble pulsación) no se duplica. */
+  async function registerBatch(input) {
+    const type = input.type;
+    if (type !== 'entrada' && type !== 'salida') throw new AppError('VALIDATION', 'Tipo de pedido no válido.');
+    const opId = input.opId || DB.uuid();
+    const party = String(input.party || '').trim().slice(0, 80);
+    const note = String(input.note || '').trim().slice(0, LIMITS.note);
+    const merged = new Map();
+    for (const it of input.items || []) {
+      const p = parseDecimal(it.amount);
+      if (p.empty || p.invalid || p.value <= 0 || p.value > 1e9) throw new AppError('VALIDATION', 'Hay un producto con una cantidad no válida. Revisa el carrito.');
+      merged.set(it.productId, round6((merged.get(it.productId) || 0) + p.value));
+    }
+    if (!merged.size) throw new AppError('VALIDATION', 'El carrito está vacío.');
+    return DB.tx(['products', 'categories', 'movements', 'settings'], 'readwrite', async (S) => {
+      const first = await R(S.movements.get(`${opId}:0`));
+      if (first) return { duplicate: true, movements: [first], orderId: opId };
+      const row = await R(S.settings.get('allowOversell'));
+      const oversell = !!(row && row.value === true);
+      const work = [];
+      for (const [productId, amount] of merged) {
+        const product = await R(S.products.get(productId));
+        if (!product) throw new AppError('NOT_FOUND', 'Un producto del carrito ya no existe. Quítalo y vuelve a intentarlo.');
+        if (product.archived) throw new AppError('ARCHIVED', `«${product.name}» está archivado. Quítalo del carrito.`);
+        const before = product.quantity === undefined ? null : product.quantity;
+        if (before === null) throw new AppError('UNKNOWN_QTY', `«${product.name}» no tiene existencia registrada. Establécela primero con «Ajustar existencia».`);
+        const after = type === 'entrada' ? round6(before + amount) : round6(before - amount);
+        if (after < 0 && !oversell) throw new AppError('INSUFFICIENT', `«${product.name}»: solo hay ${fmtNum(before)} y pides ${fmtNum(amount)}. No se registró nada.`);
+        work.push({ product, amount, before, after });
+      }
+      const out = [];
+      let i = 0;
+      for (const w of work) {
+        const mv = await buildMovement(S, w.product, {
+          id: `${opId}:${i++}`, type, quantity: w.amount, before: w.before, after: w.after, note,
+          estimated: w.product.quantityStatus === 'estimated', orderId: opId, party, createdAt: nextTs(),
+        });
+        await R(S.movements.put(mv));
+        w.product.quantity = w.after;
+        w.product.updatedAt = Date.now();
+        await R(S.products.put(w.product));
+        out.push(mv);
+      }
+      return { movements: out, orderId: opId };
+    });
+  }
+
   /* Los movimientos no se editan ni se borran (no se podría reconciliar de forma segura las existencias);
      solo se puede corregir la nota. Una equivocación se corrige con un Ajuste. */
   function updateMovementNote(id, note) {
@@ -426,10 +477,11 @@
     const match = (m) => {
       if (f.productId && m.productId !== f.productId) return false;
       if (f.type && m.type !== f.type) return false;
+      if (f.orderId && m.orderId !== f.orderId) return false;
       if (f.from && m.createdAt < f.from) return false;
       if (f.to && m.createdAt > f.to) return false;
       if (tokens.length) {
-        const hay = norm(`${m.productName} ${m.brand} ${m.code} ${m.categoryName} ${m.subcategoryName} ${m.note}`);
+        const hay = norm(`${m.productName} ${m.brand} ${m.code} ${m.categoryName} ${m.subcategoryName} ${m.note} ${m.party || ''}`);
         if (!tokens.every((t) => hay.includes(t))) return false;
       }
       return true;
@@ -517,7 +569,7 @@
     norm, fmtNum, fmtSigned, unitText, qtyText, parseDecimal, round2, round6, nextTs, collator,
     validateProductInput, createProduct, updateProduct, setPhoto, setArchived,
     deleteProduct, duplicateProduct, moveProducts, countMovements,
-    registerMovement, updateMovementNote, listMovements,
+    registerMovement, registerBatch, updateMovementNote, listMovements,
     filterProducts, findSimilar,
   };
 })();

@@ -245,6 +245,7 @@
     return r === 'cancel' ? null : r;
   };
 
+  UI.dialog = dialog;
   globalThis.UI = UI;
 
   /* =====================================================================
@@ -291,7 +292,9 @@
     state.filters = { query: '', categoryId: '', subcategoryId: '', sort: 'name', status: state.settings.defaultStatus === 'all' ? 'all' : 'active' };
     $('search').value = '';
     state.mv.productId = null;
+    state.flat = false;
     await refresh();
+    if (globalThis.Cart) Cart.reload();
   }
 
   /* =====================================================================
@@ -324,11 +327,12 @@
     const sub = [p.brand, p.code].filter(Boolean).join(' · ');
     const detail = [p.color, p.presentation, p.capacity].filter(Boolean).join(' · ');
     const cat = state.filters.subcategoryId ? '' : Categories.pathText(p, state.catById);
-    return `<article class="card product ${p.archived ? 'archived' : ''}" data-id="${p.id}" tabindex="0" role="button" aria-label="Abrir ${esc(p.name)}">
+    const inCart = globalThis.Cart && Cart.mode !== 'ver' && Cart.qty(Cart.mode, p.id) > 0;
+    return `<article class="card product ${p.archived ? 'archived' : ''} ${inCart ? 'in-cart' : ''}" data-id="${p.id}" tabindex="0" role="button" aria-label="Abrir ${esc(p.name)}">
       ${thumb}
       <div class="pmain"><div class="pname">${esc(p.name)}${p.archived ? ' <span class="badge arch">Archivado</span>' : ''}</div>
         ${sub ? `<div class="psub">${esc(sub)}</div>` : ''}${detail ? `<div class="psub">${esc(detail)}</div>` : ''}${cat ? `<div class="pcat">${esc(cat)}</div>` : ''}</div>
-      <div class="pside">${qtyChip(p)}${priceHtml(p)}</div></article>`;
+      <div class="pside">${qtyChip(p)}${priceHtml(p)}</div>${globalThis.Cart ? Cart.controlsHtml(p) : ''}</article>`;
   }
 
   function activeFilterCount() {
@@ -352,8 +356,72 @@
     $('btn-filters').textContent = n ? `Filtros (${n})` : 'Filtros';
   }
 
+  /* Navegación por botones (como un menú digital): categorías → subcategorías → productos.
+     Si hay texto en el buscador, o se pide «Todos», se muestra la lista plana. */
+  function renderBrowse() {
+    const f = state.filters;
+    const bar = $('browse-bar');
+    const tiles = $('browse-tiles');
+    const searching = !!f.query.trim();
+    const cat = f.categoryId && f.categoryId !== '__none' ? state.catById.get(f.categoryId) : null;
+    const sub = f.subcategoryId ? state.catById.get(f.subcategoryId) : null;
+    const base = Inventory.filterProducts(state.products, Object.assign({}, f, { query: '', categoryId: '', subcategoryId: '' }), state.catById);
+    const cnt = (pred) => base.filter(pred).length;
+    const crumbs = [];
+    if (cat || f.categoryId === '__none' || state.flat) {
+      crumbs.push(`<button type="button" class="crumb" data-nav="root">Inicio</button>`);
+      if (cat) crumbs.push(`<button type="button" class="crumb" data-nav="cat" data-id="${cat.id}">${esc(cat.name)}</button>`);
+      else if (f.categoryId === '__none') crumbs.push('<span class="crumb cur">Sin categoría</span>');
+      else crumbs.push('<span class="crumb cur">Todos los productos</span>');
+      if (sub) crumbs.push(`<span class="crumb cur">${esc(sub.name)}</span>`);
+      if (cat && !sub) { crumbs[crumbs.length - 1] = `<span class="crumb cur">${esc(cat.name)}</span>`; }
+    }
+    bar.innerHTML = crumbs.length && !searching ? `<nav class="crumbs" aria-label="Ubicación">${crumbs.join('<span class="sep">›</span>')}</nav>` : (crumbs.length ? `<nav class="crumbs"><button type="button" class="crumb" data-nav="root">Inicio</button><span class="sep">›</span><span class="crumb cur">Resultados de la búsqueda</span></nav>` : '');
+    let html = '';
+    let showList = true;
+    if (!searching && state.products.length) {
+      if (!cat && f.categoryId !== '__none' && !state.flat) {
+        showList = false;
+        const roots = Categories.rootsOf(state.categories);
+        html += `<button type="button" class="tile all" data-nav="all"><b>Todos los productos</b><span>${base.length}</span></button>`;
+        html += roots.map((c) => `<button type="button" class="tile" data-nav="cat" data-id="${c.id}"><b>${esc(c.name)}</b><span>${cnt((p) => p.categoryId === c.id)} productos</span></button>`).join('');
+        const none = cnt((p) => !p.categoryId);
+        if (none) html += `<button type="button" class="tile" data-nav="none"><b>Sin categoría</b><span>${none} productos</span></button>`;
+      } else if (cat && !sub && !state.flat) {
+        const subs = Categories.childrenOf(state.categories, cat.id);
+        const direct = cnt((p) => p.categoryId === cat.id && !p.subcategoryId);
+        if (subs.length) {
+          html += `<button type="button" class="tile all" data-nav="catall" data-id="${cat.id}"><b>Todos de ${esc(cat.name)}</b><span>${cnt((p) => p.categoryId === cat.id)}</span></button>`;
+          html += subs.map((c) => { const n = cnt((p) => p.subcategoryId === c.id); return `<button type="button" class="tile ${n ? '' : 'empty'}" data-nav="sub" data-id="${c.id}"><b>${esc(c.name)}</b><span>${n ? `${n} producto${n === 1 ? '' : 's'}` : 'vacía'}</span></button>`; }).join('');
+          if (direct) html += `<div class="tiles-note">Sin subcategoría (${direct})</div>`;
+          showList = direct > 0;
+        }
+      }
+    }
+    tiles.innerHTML = html;
+    tiles.hidden = !html;
+    return { showList, searching, cat, sub, subsMode: !!(html && cat && !sub) };
+  }
+
+  function navTo(a, id) {
+    const f = state.filters;
+    state.listLimit = PAGE;
+    if (a === 'root') { f.categoryId = ''; f.subcategoryId = ''; state.flat = false; }
+    else if (a === 'all') { f.categoryId = ''; f.subcategoryId = ''; state.flat = true; }
+    else if (a === 'none') { f.categoryId = '__none'; f.subcategoryId = ''; }
+    else if (a === 'cat') { f.categoryId = id; f.subcategoryId = ''; state.flat = false; }
+    else if (a === 'catall') { f.categoryId = id; f.subcategoryId = ''; state.flat = true; }
+    else if (a === 'sub') { f.subcategoryId = id; state.flat = false; }
+    renderFilters();
+    renderProducts();
+    window.scrollTo({ top: 0 });
+  }
+
   function renderProducts() {
-    const list = Inventory.filterProducts(state.products, state.filters, state.catById);
+    const br = renderBrowse();
+    let list = Inventory.filterProducts(state.products, state.filters, state.catById);
+    // En el nivel de subcategorías solo se listan los productos que no tienen subcategoría.
+    if (br.subsMode) list = list.filter((p) => !p.subcategoryId);
     const shown = list.slice(0, state.listLimit);
     const total = state.products.filter((p) => !p.archived).length;
     $('count-label').textContent = list.length === state.products.length
@@ -364,14 +432,17 @@
       box.innerHTML = `<div class="empty card"><h3>Tu almacén está vacío</h3>
         <p>Empieza añadiendo tu primer producto. Solo el nombre es obligatorio; la cantidad, el precio y la foto puedes completarlos después.</p>
         <button type="button" class="btn" data-empty="add">+ Añadir producto</button></div>`;
+    } else if (!br.showList && !br.searching) {
+      box.innerHTML = '';
+      $('count-label').textContent = 'Elige una categoría';
     } else if (!list.length) {
-      box.innerHTML = `<div class="empty card"><h3>No hay productos que mostrar</h3>
+      box.innerHTML = br.subsMode && !br.searching ? '' : `<div class="empty card"><h3>No hay productos que mostrar</h3>
         <p>${total ? 'Prueba con otra búsqueda o cambia los filtros.' : 'Todos tus productos están archivados.'}</p>
-        <button type="button" class="btn secondary" data-empty="clear">Quitar filtros</button></div>`;
+        <button type="button" class="btn secondary" data-empty="clear">Quitar filtros</button>${state.filters.subcategoryId || state.filters.categoryId ? '<button type="button" class="btn" data-empty="add">+ Añadir producto aquí</button>' : ''}</div>`;
     } else {
       box.innerHTML = shown.map(productCard).join('');
     }
-    $('more-wrap').hidden = list.length <= shown.length;
+    $('more-wrap').hidden = !br.showList && !br.searching ? true : list.length <= shown.length;
     renderReminder();
   }
 
@@ -390,6 +461,7 @@
     $('search').value = '';
     state.filters.categoryId = cat.parentId || cat.id;
     state.filters.subcategoryId = cat.parentId ? cat.id : '';
+    state.flat = false;
     state.listLimit = PAGE;
     go('almacen');
     renderFilters();
@@ -557,7 +629,7 @@
      ===================================================================== */
   const UNIT_SUGGESTIONS = ['unidades', 'cajas', 'paquetes', 'frascos', 'botellas', 'tubos', 'sobres', 'kits', 'potecitos', 'pares', 'litros', 'kg', 'g', 'L', 'ml'];
 
-  function openForm(p, onSaved) {
+  function openForm(p, onSaved, preset) {
     const creating = !p;
     const id = creating ? DB.uuid() : p.id; // el id se fija al abrir: guardar dos veces no duplica
     let dirty = false;
@@ -631,7 +703,7 @@
       if (subSel.value !== (selSub || '')) subSel.value = '';
       form.querySelector('[data-f=newsub]').disabled = !catSel.value;
     };
-    fillCats(p ? p.categoryId : '', p ? p.subcategoryId : '');
+    fillCats(p ? p.categoryId : (preset && preset.categoryId) || '', p ? p.subcategoryId : (preset && preset.subcategoryId) || '');
 
     const setPreview = (src) => {
       preview = src;
@@ -893,7 +965,7 @@
     } else {
       box.innerHTML = mv.items.map((m) => {
         const cat = [m.categoryName, m.subcategoryName].filter(Boolean).join(' › ');
-        const meta = [m.brand, cat].filter(Boolean).join(' · ');
+        const meta = [m.party ? `👤 ${m.party}` : '', m.brand, cat].filter(Boolean).join(' · ');
         const range = `${m.before === null ? 'Sin registrar' : fmtNum(m.before)} → ${fmtNum(m.after)}${m.estimated ? ' (aprox.)' : ''}`;
         return `<button type="button" class="card mv" data-mid="${m.id}">
           <div class="mv-top"><div><span class="badge ${TYPE_CLASS[m.type]}">${TYPE_LABEL[m.type]}${m.initial ? ' inicial' : ''}</span>
@@ -923,6 +995,8 @@
     const cat = [m.categoryName, m.subcategoryName].filter(Boolean).join(' › ');
     const html = `<div class="stack">
       <div><span class="badge ${TYPE_CLASS[m.type]}">${TYPE_LABEL[m.type]}${m.initial ? ' (existencia inicial)' : ''}</span></div>
+      ${m.party ? `<div class="notice info">${m.type === 'salida' ? 'Cliente' : 'Proveedor / procedencia'}: <b>${esc(m.party)}</b></div>` : ''}
+      <div id="md-order"></div>
       <div class="kv">
         <div class="full"><div class="k">Producto</div><div class="v">${esc(m.productName)}${p && p.archived ? ' <span class="badge arch">Archivado</span>' : ''}${!p ? ' <span class="badge arch">Eliminado</span>' : ''}</div></div>
         <div><div class="k">Marca</div><div class="v">${esc(m.brand || '—')}</div></div>
@@ -941,6 +1015,15 @@
     actions.push({ id: 'save', label: 'Guardar nota', kind: 'primary' });
     UI.modal({
       title: 'Detalle del movimiento', html, actions,
+      onOpen(d) {
+        if (!m.orderId) return;
+        Inventory.listMovements({ orderId: m.orderId }, 200, 0).then((r) => {
+          const box = d.body.querySelector('#md-order');
+          if (!box || r.items.length < 2) return;
+          const tot = r.items.reduce((a, x) => a + (x.quantity || 0), 0);
+          box.innerHTML = `<details open><summary>Pedido completo: ${r.items.length} productos · ${esc(fmtNum(tot))} unidades</summary>${r.items.slice().reverse().map((x) => `<div class="muted small-text">${esc(x.productName)} × <b>${esc(fmtNum(x.quantity))}</b></div>`).join('')}</details>`;
+        }).catch(() => {});
+      },
       async onAction(id, body, d) {
         if (id === 'save') {
           await Inventory.updateMovementNote(m.id, body.querySelector('#md-note').value);
@@ -966,7 +1049,7 @@
     });
     $('screen-title').textContent = TITLES[tab];
     document.title = `${TITLES[tab]} · Almacén`;
-    $('fab-add').hidden = tab !== 'almacen';
+    $('fab-add').hidden = tab !== 'almacen' || (globalThis.Cart && Cart.mode !== 'ver');
     window.scrollTo(0, 0);
     if (tab === 'movimientos') loadMovements(true);
     else if (tab === 'config') Settings.render();
@@ -1028,7 +1111,7 @@
       if (b) go(b.dataset.tab);
     });
     $('update-slot').addEventListener('click', (e) => { if (e.target.closest('[data-a=apply-update]')) applyUpdate(); });
-    $('fab-add').addEventListener('click', () => openForm(null));
+    $('fab-add').addEventListener('click', () => openForm(null, null, { categoryId: state.filters.categoryId !== '__none' ? state.filters.categoryId : '', subcategoryId: state.filters.subcategoryId }));
 
     // Búsqueda y filtros
     let timer = null;
@@ -1054,6 +1137,7 @@
     ['f-category', 'f-sub', 'f-sort', 'f-status'].forEach((id) => $(id).addEventListener('change', onFilter));
     const clearFilters = () => {
       state.filters = { query: '', categoryId: '', subcategoryId: '', sort: 'name', status: state.settings.defaultStatus === 'all' ? 'all' : 'active' };
+      state.flat = false;
       $('search').value = '';
       state.listLimit = PAGE;
       renderFilters();
@@ -1066,14 +1150,19 @@
     // Lista de productos
     const list = $('product-list');
     list.addEventListener('click', (e) => {
+      if (globalThis.Cart && Cart.handleClick(e)) { e.stopPropagation(); return; }
       const z = e.target.closest('[data-zoom]');
       if (z) { e.stopPropagation(); Gallery.openProductPhoto(z.dataset.zoom); return; }
       const empty = e.target.closest('[data-empty]');
-      if (empty) { if (empty.dataset.empty === 'add') openForm(null); else clearFilters(); return; }
+      if (empty) { if (empty.dataset.empty === 'add') openForm(null, null, { categoryId: state.filters.categoryId !== '__none' ? state.filters.categoryId : '', subcategoryId: state.filters.subcategoryId }); else clearFilters(); return; }
       const card = e.target.closest('.product');
       if (card) openProduct(card.dataset.id);
     });
+    list.addEventListener('change', (e) => { if (globalThis.Cart) Cart.handleChange(e); });
+    $('browse-tiles').addEventListener('click', (e) => { const b = e.target.closest('[data-nav]'); if (b) navTo(b.dataset.nav, b.dataset.id); });
+    $('browse-bar').addEventListener('click', (e) => { const b = e.target.closest('[data-nav]'); if (b) navTo(b.dataset.nav, b.dataset.id); });
     list.addEventListener('keydown', (e) => {
+      if (e.target.closest('.cart-row')) return;
       if ((e.key === 'Enter' || e.key === ' ') && e.target.classList.contains('product')) { e.preventDefault(); openProduct(e.target.dataset.id); }
     });
     $('backup-reminder').addEventListener('click', (e) => {
@@ -1131,6 +1220,7 @@
       bindEvents();
       Gallery.init();
       Settings.init();
+      Cart.init();
       renderFilters();
       renderProducts();
       Gallery.renderSection();
@@ -1157,7 +1247,7 @@
   globalThis.App = {
     state, reload, refresh, afterRestore, go, boot,
     openProduct, openForm, openMovement, showHistory, showCategory,
-    renderProducts, renderFilters, loadMovements, checkUpdate,
+    renderProducts, renderFilters, loadMovements, checkUpdate, navTo,
   };
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);

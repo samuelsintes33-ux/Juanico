@@ -143,9 +143,20 @@
               const hay = norm(`${p.name} ${p.brand} ${p.code}`);
               return tokens.every((t) => hay.includes(t));
             });
-            listEl.innerHTML = visible.map((p) => `<label class="pick-item"><input type="checkbox" value="${p.id}" ${chosen.has(p.id) ? 'checked' : ''}>
-              <span><b>${esc(p.name)}</b><br><span class="muted small-text">${esc([p.brand, p.code].filter(Boolean).join(' · '))}</span></span></label>`).join('')
-              || '<div class="empty">No hay productos que coincidan.</div>';
+            const groups = new Map();
+            for (const p of visible) {
+              const c = p.categoryId ? st.catById.get(p.categoryId) : null;
+              const sb = p.subcategoryId ? st.catById.get(p.subcategoryId) : null;
+              const key = `${c ? c.id : ''}|${sb ? sb.id : ''}`;
+              if (!groups.has(key)) groups.set(key, { key, name: [c ? c.name : 'Sin categoría', sb ? sb.name : ''].filter(Boolean).join(' › '), o: [c ? c.order : 1e9, sb ? sb.order : -1], items: [] });
+              groups.get(key).items.push(p);
+            }
+            const gl = [...groups.values()].sort((a, b) => (a.o[0] - b.o[0]) || (a.o[1] - b.o[1]));
+            listEl.innerHTML = gl.map((g) => {
+              const n = g.items.filter((p) => chosen.has(p.id)).length;
+              return `<div class="pick-group"><button type="button" class="btn secondary small pick-gh" data-pk-g="${esc(g.key)}">${esc(g.name)} · ${n}/${g.items.length} — ${n === g.items.length ? 'quitar grupo' : 'marcar grupo'}</button>${g.items.map((p) => `<label class="pick-item"><input type="checkbox" value="${p.id}" ${chosen.has(p.id) ? 'checked' : ''}>
+              <span><b>${esc(p.name)}</b><br><span class="muted small-text">${esc([p.color, p.brand, p.code].filter(Boolean).join(' · '))}</span></span></label>`).join('')}</div>`;
+            }).join('') || '<div class="empty">No hay productos que coincidan.</div>';
             count.textContent = `${chosen.size} seleccionado${chosen.size === 1 ? '' : 's'}`;
           };
           draw();
@@ -157,6 +168,14 @@
             count.textContent = `${chosen.size} seleccionado${chosen.size === 1 ? '' : 's'}`;
           });
           d.body.addEventListener('click', (e) => {
+            const g = e.target.closest('[data-pk-g]');
+            if (g) {
+              const items = visible.filter((p) => `${p.categoryId || ''}|${p.subcategoryId || ''}` === g.dataset.pkG);
+              const all = items.every((p) => chosen.has(p.id));
+              items.forEach((p) => { if (all) chosen.delete(p.id); else chosen.add(p.id); });
+              draw();
+              return;
+            }
             const b = e.target.closest('[data-pk]');
             if (!b) return;
             if (b.dataset.pk === 'all') visible.forEach((p) => chosen.add(p.id)); else chosen.clear();

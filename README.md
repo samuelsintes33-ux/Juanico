@@ -29,6 +29,13 @@ Al subir cambios, edita `VERSION` en `service-worker.js`. En el teléfono: Confi
 - Las fotos solo viajan si eliges incluirlas. La primera vez conviene «Todas las fotos».
 - Si ese teléfono se preparó restaurando una copia del administrador, en la primera actualización aparece la opción «Archivar lo que el administrador ya no tiene».
 
+## Menú por categorías y carritos
+- **Almacén** abre con botones de categorías → subcategorías → productos (como un menú digital). El buscador sigue funcionando en cualquier nivel; «Todos los productos» muestra la lista completa.
+- Arriba hay tres modos: **Consultar**, **Salida** y **Entrada**. En Salida/Entrada cada producto muestra −, un campo de cantidad editable y botones rápidos (+5, +10, +12, +50…). Se cambian en Configuración › «Botones rápidos del carrito».
+- Abajo aparece la barra del carrito: «Ver y confirmar» pide el **cliente** (o proveedor), una nota, y registra **todo el pedido en una sola operación** (si algo falla, no cambia nada; una doble pulsación no lo duplica). Al terminar puedes compartir el resumen.
+- En **Movimientos** busca por el nombre del cliente; al abrir un movimiento verás el pedido completo.
+- En una salida no se puede pasar de la existencia (salvo que lo permitas en Configuración). Los productos sin existencia registrada necesitan un Ajuste antes.
+
 ## Notas
 - Cantidad vacía = «sin registrar» (no es 0). Las cantidades aproximadas se marcan con ≈ y no se mezclan con las confirmadas.
 - No genera APK. Es una PWA instalable desde Chrome.
