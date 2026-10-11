@@ -177,6 +177,7 @@
       initial: !!f.initial,
       estimated: !!f.estimated,
       orderId: f.orderId || null,
+      price: typeof f.price === 'number' && Number.isFinite(f.price) ? f.price : null,
       party: f.party || '',
       createdAt: f.createdAt,
     };
@@ -418,7 +419,13 @@
     const party = String(input.party || '').trim().slice(0, 80);
     const note = String(input.note || '').trim().slice(0, LIMITS.note);
     const merged = new Map();
+    const prices = new Map();
     for (const it of input.items || []) {
+      if (it.price !== null && it.price !== undefined && it.price !== '') {
+        const pp = Number(it.price);
+        if (!Number.isFinite(pp) || pp < 0 || pp > 1e9) throw new AppError('VALIDATION', 'Hay un precio no válido en el carrito.');
+        prices.set(it.productId, round2(pp));
+      }
       const p = parseDecimal(it.amount);
       if (p.empty || p.invalid || p.value <= 0 || p.value > 1e9) throw new AppError('VALIDATION', 'Hay un producto con una cantidad no válida. Revisa el carrito.');
       merged.set(it.productId, round6((merged.get(it.productId) || 0) + p.value));
@@ -445,7 +452,7 @@
       for (const w of work) {
         const mv = await buildMovement(S, w.product, {
           id: `${opId}:${i++}`, type, quantity: w.amount, before: w.before, after: w.after, note,
-          estimated: w.product.quantityStatus === 'estimated', orderId: opId, party, createdAt: nextTs(),
+          estimated: w.product.quantityStatus === 'estimated', orderId: opId, party, price: type === 'salida' && prices.has(w.product.id) ? prices.get(w.product.id) : null, createdAt: nextTs(),
         });
         await R(S.movements.put(mv));
         w.product.quantity = w.after;

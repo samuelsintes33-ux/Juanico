@@ -12,7 +12,7 @@
     entrada: { name: 'Entrada', cart: 'Carrito de entrada', party: 'Proveedor o procedencia (opcional)', ph: 'Ej. Proveedor Habana', ok: 'Confirmar entrada' },
   };
 
-  const blankCart = () => ({ items: {}, party: '', note: '', opId: DB.uuid() });
+  const blankCart = () => ({ items: {}, prices: {}, party: '', note: '', opId: DB.uuid() });
   let carts = { salida: blankCart(), entrada: blankCart() };
   let mode = 'ver'; // ver | salida | entrada
   let saveTimer = null;
@@ -27,7 +27,7 @@
       for (const t of ['salida', 'entrada']) {
         const c = raw[t];
         if (c && typeof c === 'object') {
-          carts[t] = { items: Object.assign({}, c.items || {}), party: String(c.party || ''), note: String(c.note || ''), opId: typeof c.opId === 'string' && c.opId ? c.opId : DB.uuid() };
+          carts[t] = { items: Object.assign({}, c.items || {}), prices: Object.assign({}, c.prices || {}), party: String(c.party || ''), note: String(c.note || ''), opId: typeof c.opId === 'string' && c.opId ? c.opId : DB.uuid() };
         }
       }
     }
@@ -53,6 +53,26 @@
   const qty = (t, id) => carts[t].items[id] || 0;
   const count = (t) => Object.keys(carts[t].items).length;
   const total = (t) => Object.values(carts[t].items).reduce((a, b) => a + b, 0);
+
+  const listPrice = (p) => { const r = Categories.resolvePrice(p, S().catById); return r.value; };
+  /* Precio que se usará en el pedido: el que escribas en el carrito, o el del producto/subcategoría/categoría. */
+  function effPrice(t, p) {
+    if (t !== 'salida') return null;
+    const o = carts[t].prices[p.id];
+    if (o !== undefined && o !== null) return o;
+    const lp = listPrice(p);
+    return lp === undefined ? null : lp;
+  }
+  function money(v) { return `${fmt(Inventory.round2(v))} ${S().settings.currency}`; }
+  function orderTotal(t) {
+    let sum = 0; let missing = 0;
+    for (const [id, n] of Object.entries(carts[t].items)) {
+      const p = productOf(id); if (!p) continue;
+      const pr = effPrice(t, p);
+      if (pr === null) missing++; else sum += n * pr;
+    }
+    return { sum: Inventory.round2(sum), missing };
+  }
 
   function maxFor(t, p) {
     if (t !== 'salida' || S().settings.allowOversell) return Infinity;
@@ -210,7 +230,9 @@
           <div class="cart-step"><button type="button" class="btn secondary small" data-ci="dec" aria-label="Quitar uno">−</button>
             <input class="cq" inputmode="decimal" value="${esc(fmt(n))}" aria-label="Cantidad">
             <button type="button" class="btn secondary small" data-ci="inc" aria-label="Añadir uno">+</button>
-            <button type="button" class="btn danger-ghost small" data-ci="rm" aria-label="Quitar del carrito">✕</button></div></div>`;
+            <button type="button" class="btn danger-ghost small" data-ci="rm" aria-label="Quitar del carrito">✕</button></div>
+          ${t === 'salida' ? `<div class="ci-price"><label>Precio c/u <input class="cp" inputmode="decimal" placeholder="${listPrice(p) === null || listPrice(p) === undefined ? 'Sin precio' : esc(fmt(listPrice(p)))}" value="${c().prices[p.id] !== undefined ? esc(fmt(c().prices[p.id])) : ''}" aria-label="Precio de ${esc(p.name)}"></label>
+            <span class="ci-sub">${effPrice(t, p) === null ? '—' : esc(money(n * effPrice(t, p)))}</span></div>` : ''}</div>`;
       }).join('') : '<div class="empty">El carrito está vacío.</div>';
     };
     const html = `<div class="stack">
@@ -229,7 +251,8 @@
         const q = (s) => d.body.querySelector(s);
         const redraw = () => {
           q('#ci-list').innerHTML = body();
-          q('#ci-total').textContent = `${count(t)} producto${count(t) === 1 ? '' : 's'} · ${fmt(total(t))} unidades`;
+          const ot = t === 'salida' ? orderTotal(t) : null;
+          q('#ci-total').innerHTML = `${count(t)} producto${count(t) === 1 ? '' : 's'} · ${fmt(total(t))} unidades` + (ot ? `<div class="ci-grand">Total: <b>${esc(money(ot.sum))}</b>${ot.missing ? ` <span class="muted small-text">(${ot.missing} sin precio, no incluido${ot.missing === 1 ? '' : 's'})</span>` : ''}</div>` : '');
           d.foot.querySelector('[data-act=ok]').disabled = !count(t);
           d.foot.querySelector('[data-act=clear]').disabled = !count(t);
         };
@@ -245,6 +268,13 @@
           redraw();
         });
         d.body.addEventListener('change', (e) => {
+          const pin = e.target.closest('.cp');
+          if (pin) {
+            const id = pin.closest('.ci').dataset.pid;
+            const v = pin.value.trim().replace(',', '.');
+            if (v === '') delete c().prices[id]; else if (Number.isFinite(Number(v)) && Number(v) >= 0) c().prices[id] = Number(v); else UI.toast('Escribe un precio válido.', 'error');
+            persist(); redraw(); return;
+          }
           const inp = e.target.closest('.cq');
           if (inp) { const id = inp.closest('.ci').dataset.pid; setQty(t, id, Number(inp.value.replace(',', '.')) || 0); redraw(); }
         });
@@ -269,10 +299,10 @@
           }
         }
         try {
-          const items = Object.entries(c().items).map(([productId, amount]) => ({ productId, amount }));
-          const snapshot = items.map((it) => ({ p: productOf(it.productId), n: it.amount }));
+          const items = Object.entries(c().items).map(([productId, amount]) => ({ productId, amount, price: effPrice(t, productOf(productId)) }));
+          const snapshot = items.map((it) => ({ p: productOf(it.productId), n: it.amount, price: it.price }));
           const out = await Inventory.registerBatch({ type: t, items, party: c().party, note: c().note, opId: c().opId });
-          confirmed = { t, party: c().party.trim(), note: c().note.trim(), snapshot, out };
+          confirmed = { t, party: c().party.trim(), note: c().note.trim(), snapshot, out, currency: S().settings.currency };
           carts[t] = blankCart(); persist();
         } catch (e) {
           err.textContent = DB.friendlyError(e);
@@ -285,33 +315,142 @@
     if (confirmed) await showDone(confirmed);
   }
 
-  function summaryText(r) {
-    const lines = [`${r.t === 'salida' ? 'Pedido' : 'Entrada'}${r.party ? ` — ${r.party}` : ''}`, new Date().toLocaleDateString('es', { dateStyle: 'long' }), ''];
-    for (const { p, n } of r.snapshot) lines.push(`- ${p.name}${p.color && !Inventory.norm(p.name).includes(Inventory.norm(p.color)) ? ` (${p.color})` : ''} × ${fmt(n)}`);
+  const hasPrices = (r) => r.t === 'salida' && r.snapshot.some((x) => x.price !== null && x.price !== undefined);
+  const lineTotal = (x) => (x.price === null || x.price === undefined ? null : Inventory.round2(x.n * x.price));
+  const grand = (r) => Inventory.round2(r.snapshot.reduce((a, x) => a + (lineTotal(x) || 0), 0));
+  const nameOf = (p) => `${p.name}${p.color && !Inventory.norm(p.name).includes(Inventory.norm(p.color)) ? ` (${p.color})` : ''}`;
+  const dateText = () => new Date().toLocaleDateString('es', { dateStyle: 'long' });
+
+  /* Texto corto: cada producto en 2 líneas cortas, para que no se corte en el chat. */
+  function summaryText(r, withPrices) {
+    const wp = withPrices !== false && hasPrices(r);
+    const lines = [`${r.t === 'salida' ? 'PEDIDO' : 'ENTRADA'}${r.party ? ` — ${r.party}` : ''}`, dateText(), ''];
+    for (const x of r.snapshot) {
+      lines.push(nameOf(x.p));
+      const lt = lineTotal(x);
+      lines.push(wp && lt !== null ? `   ${fmt(x.n)} × ${fmt(x.price)} = ${fmt(lt)} ${r.currency}` : `   ${fmt(x.n)} ${Inventory.unitText(x.p.unit, x.n).replace(/^\S+\s/, '')}`);
+    }
     lines.push('', `Total: ${fmt(r.snapshot.reduce((a, x) => a + x.n, 0))} unidades`);
-    if (r.note) lines.push(r.note);
+    if (wp) lines.push(`TOTAL A PAGAR: ${fmt(grand(r))} ${r.currency}`);
+    if (r.note) lines.push('', r.note);
     return lines.join('\n');
+  }
+
+  /* Dibuja en una imagen (PNG) con letra grande y ancho fijo: en WhatsApp se ve completa, sin cortes. */
+  function canvasFor(draw, measureOnly) {
+    const W = 760; const PAD = 36;
+    const cv = document.createElement('canvas');
+    const ctx = cv.getContext('2d');
+    const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+    const wrap = (text, font, maxW) => {
+      ctx.font = font;
+      const words = String(text).split(/\s+/); const out = []; let cur = '';
+      for (const w of words) {
+        const t = cur ? `${cur} ${w}` : w;
+        if (ctx.measureText(t).width > maxW && cur) { out.push(cur); cur = w; } else cur = t;
+      }
+      if (cur) out.push(cur);
+      return out;
+    };
+    const H = draw(ctx, { W, PAD, FONT, wrap, dry: true });
+    cv.width = W; cv.height = Math.ceil(H);
+    ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, W, cv.height);
+    draw(ctx, { W, PAD, FONT, wrap, dry: false });
+    return cv;
+  }
+  const toBlob = (cv) => new Promise((res, rej) => cv.toBlob((b) => (b ? res(b) : rej(new Error('No se pudo crear la imagen.'))), 'image/png'));
+
+  function receiptImage(r, withPrices) {
+    const wp = withPrices !== false && hasPrices(r);
+    const cv = canvasFor((ctx, { W, PAD, FONT, wrap, dry }) => {
+      let y = PAD;
+      const txt = (s, font, color, x, align) => { if (dry) return; ctx.font = font; ctx.fillStyle = color; ctx.textAlign = align || 'left'; ctx.textBaseline = 'alphabetic'; ctx.fillText(s, x, y); };
+      const rule = () => { if (!dry) { ctx.strokeStyle = '#cbd5e1'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(PAD, y); ctx.lineTo(W - PAD, y); ctx.stroke(); } };
+      y += 34; txt(r.t === 'salida' ? 'PEDIDO' : 'ENTRADA', `800 38px ${FONT}`, '#0f766e', PAD); y += 14;
+      if (r.party) for (const l of wrap(r.party, `700 32px ${FONT}`, W - 2 * PAD)) { y += 40; txt(l, `700 32px ${FONT}`, '#0f172a', PAD); }
+      y += 36; txt(dateText(), `500 26px ${FONT}`, '#475569', PAD); y += 22; rule(); y += 10;
+      const qx = W - PAD - (wp ? 220 : 0);
+      for (const x of r.snapshot) {
+        const lines = wrap(nameOf(x.p), `650 30px ${FONT}`, (wp ? qx - PAD - 160 : W - 2 * PAD - 150));
+        const lt = lineTotal(x);
+        const top = y;
+        lines.forEach((l, i) => { y += 40; txt(l, `650 30px ${FONT}`, '#0f172a', PAD); });
+        const q = wp && lt !== null ? `${fmt(x.n)} × ${fmt(x.price)}` : `${fmt(x.n)}`;
+        const saved = y; y = top + 40;
+        txt(q, `700 30px ${FONT}`, '#0f172a', wp ? qx + 10 : W - PAD, wp ? 'right' : 'right');
+        if (wp) txt(lt !== null ? fmt(lt) : '—', `700 30px ${FONT}`, '#0f172a', W - PAD, 'right');
+        y = saved + 16; rule(); y += 10;
+      }
+      y += 44; txt(`Total: ${fmt(r.snapshot.reduce((a, x) => a + x.n, 0))} unidades`, `600 28px ${FONT}`, '#334155', PAD);
+      if (wp) { y += 56; txt('TOTAL A PAGAR', `800 32px ${FONT}`, '#0f172a', PAD); txt(`${fmt(grand(r))} ${r.currency}`, `800 38px ${FONT}`, '#0f766e', W - PAD, 'right'); }
+      if (r.note) for (const l of wrap(r.note, `500 26px ${FONT}`, W - 2 * PAD)) { y += 40; txt(l, `500 26px ${FONT}`, '#475569', PAD); }
+      return y + PAD;
+    });
+    return toBlob(cv);
+  }
+
+  /* Convierte cualquier texto (por ejemplo un listado) en una imagen legible. */
+  function textImage(lines) {
+    const cv = canvasFor((ctx, { W, PAD, FONT, wrap, dry }) => {
+      let y = PAD;
+      for (const raw of lines) {
+        const head = raw && raw === raw.toLocaleUpperCase('es') && !raw.startsWith('-') && raw.length > 2;
+        const font = head ? `800 30px ${FONT}` : `500 28px ${FONT}`;
+        if (!raw) { y += 22; continue; }
+        for (const l of wrap(raw, font, W - 2 * PAD)) { y += head ? 44 : 38; if (!dry) { ctx.font = font; ctx.fillStyle = head ? '#0f766e' : '#0f172a'; ctx.textAlign = 'left'; ctx.fillText(l, PAD, y); } }
+      }
+      return y + PAD;
+    });
+    return toBlob(cv);
+  }
+
+  async function shareBlob(blob, name, type, title) {
+    const file = new File([blob], name, { type });
+    if (navigator.canShare && navigator.share) {
+      let ok = false;
+      try { ok = navigator.canShare({ files: [file] }); } catch (_) { /* nada */ }
+      if (ok) {
+        try { await navigator.share({ files: [file], title }); return 'shared'; } catch (e) { if (e && e.name === 'AbortError') return 'cancelled'; }
+      }
+    }
+    UI.download(blob, name);
+    return 'downloaded';
   }
 
   async function showDone(r) {
     const totalU = r.snapshot.reduce((a, x) => a + x.n, 0);
-    const choice = await UI.modal({
-      title: `${LABEL[r.t].name} registrada`, cls: 'center-dlg',
-      html: `<div class="stack"><div class="issue ok"><b>Listo.</b> ${r.snapshot.length} producto${r.snapshot.length === 1 ? '' : 's'}, ${fmt(totalU)} unidades${r.party ? ` · ${esc(r.party)}` : ''}. Las existencias ya se actualizaron y el pedido quedó en Movimientos.</div></div>`,
-      actions: [{ id: 'cancel', label: 'Cerrar', kind: 'ghost' }, { id: 'share', label: 'Compartir resumen', kind: 'primary' }],
-      async onAction(id) {
-        if (id !== 'share') return;
-        const text = summaryText(r);
-        if (navigator.share) {
-          try { await navigator.share({ text }); } catch (e) { if (!e || e.name !== 'AbortError') UI.toast('No se pudo abrir el menú de compartir.', 'error'); }
-        } else {
-          const ok = await UI.copyText(text);
-          UI.toast(ok ? 'Resumen copiado. Pégalo en WhatsApp.' : 'No se pudo copiar el resumen.', ok ? 'ok' : 'error');
-        }
-        return false;
+    const wp = hasPrices(r);
+    const html = `<div class="stack"><div class="issue ok"><b>Listo.</b> ${r.snapshot.length} producto${r.snapshot.length === 1 ? '' : 's'}, ${fmt(totalU)} unidades${r.party ? ` · ${esc(r.party)}` : ''}${wp ? `<br>Total: <b>${esc(money(grand(r)))}</b>` : ''}. Las existencias ya se actualizaron y el pedido quedó en Movimientos.</div>
+      ${wp ? '<label class="switch"><span class="sw-text">Mostrar precios en el recibo</span><input type="checkbox" id="dn-prices" checked></label>' : ''}
+      <button type="button" class="btn" data-dn="img">Compartir recibo (imagen)</button>
+      <button type="button" class="btn secondary" data-dn="txt">Compartir como texto</button>
+      <button type="button" class="btn secondary" data-dn="file">Compartir archivo de texto (.txt)</button>
+      <p class="muted small-text">La imagen se ve completa en WhatsApp, sin tener que bajar el texto.</p></div>`;
+    return UI.modal({
+      title: `${LABEL[r.t].name} registrada`, cls: 'center-dlg', html,
+      actions: [{ id: 'cancel', label: 'Cerrar', kind: 'ghost' }],
+      onOpen(d) {
+        d.body.addEventListener('click', async (e) => {
+          const b = e.target.closest('[data-dn]');
+          if (!b) return;
+          const wpOn = !d.body.querySelector('#dn-prices') || d.body.querySelector('#dn-prices').checked;
+          const base = `${r.t === 'salida' ? 'pedido' : 'entrada'}${r.party ? '-' + r.party.toLowerCase().replace(/[^a-z0-9áéíóúñ]+/gi, '-').replace(/^-|-$/g, '') : ''}`;
+          try {
+            if (b.dataset.dn === 'img') {
+              const res = await shareBlob(await receiptImage(r, wpOn), `${base}.png`, 'image/png', 'Recibo');
+              if (res === 'downloaded') UI.toast('Se guardó la imagen en tu teléfono. Envíala desde WhatsApp › adjuntar › galería.');
+            } else if (b.dataset.dn === 'file') {
+              const res = await shareBlob(new Blob([summaryText(r, wpOn)], { type: 'text/plain' }), `${base}.txt`, 'text/plain', 'Recibo');
+              if (res === 'downloaded') UI.toast('Se guardó el archivo en tu teléfono.');
+            } else {
+              const text = summaryText(r, wpOn);
+              if (navigator.share) { try { await navigator.share({ text }); } catch (er) { if (!er || er.name !== 'AbortError') UI.toast('No se pudo abrir el menú de compartir.', 'error'); } }
+              else { const ok = await UI.copyText(text); UI.toast(ok ? 'Resumen copiado. Pégalo en WhatsApp.' : 'No se pudo copiar el resumen.', ok ? 'ok' : 'error'); }
+            }
+          } catch (er) { UI.toast(DB.friendlyError(er), 'error'); }
+        });
       },
     });
-    return choice;
   }
 
   function reload() {
@@ -331,5 +470,5 @@
     renderBar();
   }
 
-  globalThis.Cart = { init, reload, controlsHtml, handleClick, handleChange, setMode, refreshUI, open, get mode() { return mode; }, qty, count, total };
+  globalThis.Cart = { init, reload, textImage, shareBlob, controlsHtml, handleClick, handleChange, setMode, refreshUI, open, get mode() { return mode; }, qty, count, total };
 })();

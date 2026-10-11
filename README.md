@@ -36,6 +36,11 @@ Al subir cambios, edita `VERSION` en `service-worker.js`. En el teléfono: Confi
 - En **Movimientos** busca por el nombre del cliente; al abrir un movimiento verás el pedido completo.
 - En una salida no se puede pasar de la existencia (salvo que lo permitas en Configuración). Los productos sin existencia registrada necesitan un Ajuste antes.
 
+## Recibos y totales
+- En la salida, cada producto del carrito muestra su precio (el del producto, subcategoría o categoría) y puedes cambiarlo solo para ese pedido. El carrito suma el **total**; los productos sin precio no se incluyen y se avisa.
+- Al confirmar: «Compartir recibo (imagen)» (letra grande, se ve completa en WhatsApp), «Compartir como texto» (cada producto en 2 líneas cortas) o archivo .txt. Se puede ocultar los precios.
+- El generador de listados también tiene «Como imagen».
+
 ## Notas
 - Cantidad vacía = «sin registrar» (no es 0). Las cantidades aproximadas se marcan con ≈ y no se mezclan con las confirmadas.
 - No genera APK. Es una PWA instalable desde Chrome.

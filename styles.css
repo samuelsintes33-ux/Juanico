@@ -446,3 +446,8 @@ body.cart-on .fab { display: none; }
 .pick-group { margin-bottom: 10px; }
 .pick-gh { width: 100%; justify-content: flex-start; text-align: left; margin: 6px 0; }
 .dlg-foot { flex-wrap: wrap; }
+
+.ci-price { flex: 1 0 100%; display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: .9rem; color: var(--muted); }
+.cp { width: 110px; min-height: 40px; text-align: right; border-radius: 10px; border: 1px solid var(--border); background: var(--surface); color: var(--text); padding: 0 8px; }
+.ci-sub { font-weight: 750; color: var(--text); }
+.ci-grand { font-size: 1.15rem; margin-top: 6px; color: var(--text); }

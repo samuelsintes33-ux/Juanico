@@ -234,7 +234,7 @@
         <pre class="list-preview" id="l-preview" aria-live="polite"></pre>
       </div>`,
     });
-    d.setFoot(`<button type="button" class="btn secondary" data-l="copy">Copiar texto</button><button type="button" class="btn" data-l="share">Compartir</button>`);
+    d.setFoot(`<button type="button" class="btn secondary" data-l="copy">Copiar texto</button><button type="button" class="btn secondary" data-l="image">Como imagen</button><button type="button" class="btn" data-l="share">Compartir</button>`);
 
     const $ = (id) => d.body.querySelector(id);
     $('#l-order').value = prefs.order;
@@ -327,6 +327,12 @@
       if (b.dataset.l === 'copy') {
         const ok = await UI.copyText(lastText);
         UI.toast(ok ? 'Texto copiado. Ya puedes pegarlo en WhatsApp u otra aplicación.' : 'No se pudo copiar automáticamente. Mantén pulsado el texto de la vista previa para copiarlo.', ok ? 'ok' : 'error');
+      } else if (b.dataset.l === 'image') {
+        try {
+          const blob = await Cart.textImage(lastText.split('\n'));
+          const res = await Cart.shareBlob(blob, 'listado.png', 'image/png', 'Listado');
+          if (res === 'downloaded') UI.toast('Se guardó la imagen en tu teléfono. Envíala desde WhatsApp › adjuntar › galería.');
+        } catch (err) { UI.toast(DB.friendlyError(err), 'error'); }
       } else if (b.dataset.l === 'share') {
         if (navigator.share) {
           try {
