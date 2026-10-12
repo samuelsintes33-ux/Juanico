@@ -642,7 +642,32 @@
     return products.find((p) => p.id !== excludeId && !p.archived && norm(p.name) === n && norm(p.brand) === b && norm(p.code) === c) || null;
   }
 
+  /* Pone el mismo precio a varios productos a la vez (una sola transacción). raw vacío = quitar precio. */
+  function setPrices(ids, raw) {
+    const pr = parseDecimal(raw);
+    if (pr.invalid) throw new AppError('VALIDATION', 'El precio debe ser un número válido (por ejemplo 500 o 12,50).', { field: 'price' });
+    let value = null;
+    if (!pr.empty) {
+      if (pr.value < 0 || pr.value > 1e9) throw new AppError('VALIDATION', 'El precio no es válido.', { field: 'price' });
+      value = round2(pr.value);
+    }
+    return DB.tx(['products'], 'readwrite', async (S) => {
+      const now = Date.now();
+      let n = 0;
+      for (const id of ids) {
+        const p = await R(S.products.get(id));
+        if (!p || p.archived) continue;
+        if ((p.price === undefined ? null : p.price) === value) continue;
+        p.price = value; p.updatedAt = now;
+        await R(S.products.put(p));
+        n++;
+      }
+      return { changed: n, price: value };
+    });
+  }
+
   globalThis.Inventory = {
+    setPrices,
     MOVEMENT_TYPES, BAJA_REASONS, LIMITS,
     norm, fmtNum, fmtSigned, unitText, qtyText, parseDecimal, round2, round6, nextTs, collator,
     validateProductInput, createProduct, updateProduct, setPhoto, setArchived,

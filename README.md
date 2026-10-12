@@ -3,7 +3,7 @@
 Aplicación web instalable que funciona sin conexión. Los datos viven en **IndexedDB de cada teléfono**; GitHub Pages solo sirve los archivos de la app, **no guarda tu inventario**. Haz copias de seguridad.
 
 ## Archivos (todos en la raíz, sin carpetas)
-index.html, styles.css, app.js, database.js, inventory.js, categories.js, gallery.js, lists.js, settings.js, **sync.js**, manifest.json, service-worker.js, icon-192.png, icon-512.png, README.md
+index.html, styles.css, app.js, database.js, inventory.js, categories.js, gallery.js, lists.js, settings.js, sync.js, **cart.js, shareimg.js**, manifest.json, service-worker.js, icon-192.png, icon-512.png, README.md
 
 ## Publicar en GitHub Pages desde el teléfono
 1. Crea el repositorio y sube cada archivo a la raíz (Add file › Upload files).
@@ -40,6 +40,21 @@ Al subir cambios, edita `VERSION` en `service-worker.js`. En el teléfono: Confi
 - En la salida, cada producto del carrito muestra su precio (el del producto, subcategoría o categoría) y puedes cambiarlo solo para ese pedido. El carrito suma el **total**; los productos sin precio no se incluyen y se avisa.
 - Al confirmar: «Compartir recibo (imagen)» (letra grande, se ve completa en WhatsApp), «Compartir como texto» (cada producto en 2 líneas cortas) o archivo .txt. Se puede ocultar los precios.
 - El generador de listados también tiene «Como imagen».
+
+## Bajas, pérdidas y retiros (v1.4.0)
+- En el carrito elige el modo **Baja** (o el botón «Baja: pérdida o retiro» en la ficha de un producto). Motivos: Pérdida, Producto dañado, Retiro de mercancía y los que añadas en Configuración. **No es una venta ni un ingreso.**
+- Descuentan la existencia y quedan en Movimientos › **Bajas**, con quién retiró, fecha y un resumen de totales por producto y motivo.
+- Si la cantidad es desconocida o insuficiente, la app no inventa nada: registra la baja como **discrepancia** (no toca la existencia) y aparece en Movimientos › **⚠ Discrep.** hasta que la marques como revisada.
+
+## Compartir como imágenes (v1.4.0)
+- En «Generar un listado» (o los botones «Compartir…» del menú) elige categoría o todo el inventario, con o sin cantidades/precios, y pulsa «Compartir imágenes».
+- Salen varias imágenes numeradas (1080 px de ancho, una o varias por categoría, p. ej. «Tintes capilares 3/9»), todas a la vez al menú de compartir de Android. Así no se pixelan ni se cortan.
+
+## Actualizar el catálogo desde un archivo
+`actualizacion-catalogo.json` NO se sube a GitHub: se aplica en Configuración › Actualización entre teléfonos › «Aplicar un archivo de actualización». Muestra una vista previa (cantidades, precios, productos nuevos, retiros) antes de cambiar nada y no duplica si se aplica dos veces.
+
+## Cambiar precios por grupo o eligiendo productos (v1.4.2)
+Configuración › «Precios por grupo»: agrupa los productos de la misma marca, presentación y tamaño (el color, el código y el volumen no cuentan; p. ej. todos los Stereo de 50 ml, o los peróxidos Oggy de 1 L en 30 y 40 vol). Escribes el precio y «Aplicar a todos». Si el grupo tenía precios distintos, pide confirmación. Cada grupo tiene «Elegir…» para marcar solo algunos productos (p. ej. dejar fuera los rojos), y el modo «Elegir productos» permite marcar productos sueltos de cualquier marca y ponerles un precio a la vez.
 
 ## Notas
 - Cantidad vacía = «sin registrar» (no es 0). Las cantidades aproximadas se marcan con ≈ y no se mezclan con las confirmadas.

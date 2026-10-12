@@ -6,7 +6,7 @@
   const esc = (s) => UI.esc(s);
 
   const APP_ID = 'almacen-inventario';
-  const APP_VERSION = '1.4.0';
+  const APP_VERSION = '1.4.2';
   const BACKUP_SCHEMA = 2; // versión del formato de copia (coincide con la versión de la base de datos)
   const LOCAL_ONLY_KEYS = ['lastBackupAt', 'syncState', 'carts']; // propios de cada teléfono: nunca viajan en copias
 
@@ -622,6 +622,7 @@
             <span class="hint">Cantidades que se suman con un toque, separadas por comas. Ej.: 1, 5, 10, 12, 50 (máximo 8).</span></label>
           <label class="field"><span>Otros motivos de baja</span><input id="cfg-reasons" maxlength="200" value="${esc((s.customReasons || []).join(', '))}" autocomplete="off">
             <span class="hint">Se añaden a Pérdida, Producto dañado y Retiro de mercancía. Sepáralos con comas. Ej.: Muestra, Regalo, Vencido.</span></label>
+          <button type="button" class="btn" data-s="price-groups">Cambiar precios (por grupo o eligiendo productos)</button>
           <button type="button" class="btn secondary" data-s="categories">Categorías y precios generales</button>
         </div>
       </div>
@@ -694,6 +695,7 @@
       const a = b.dataset.s;
       try {
         if (a === 'categories') Categories.openManager();
+        else if (a === 'price-groups') Categories.openPriceGroups();
         else if (a === 'lists') Lists.openGenerator();
         else if (a === 'export') await UI.once('export', () => doExport(false));
         else if (a === 'share-backup') await UI.once('export', () => doExport(true));

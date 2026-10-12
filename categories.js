@@ -392,10 +392,141 @@
     return d;
   }
 
+  /* ===== Precios por grupo: misma marca + misma presentación/tamaño (sin importar color, código ni volumen) ===== */
+  function priceGroups(products, byId) {
+    const nz = (x) => String(x || '').trim().toLowerCase();
+    const map = new Map();
+    for (const p of products) {
+      if (p.archived) continue;
+      const key = [p.subcategoryId || p.categoryId || '', nz(p.brand), nz(p.presentation), nz(p.capacity), nz(p.unit)].join('|');
+      if (!map.has(key)) map.set(key, { key, items: [], p0: p });
+      map.get(key).items.push(p);
+    }
+    const groups = [...map.values()].map((g) => {
+      const p = g.p0;
+      const sub = byId.get(p.subcategoryId) || byId.get(p.categoryId);
+      const top = byId.get(p.categoryId);
+      const label = [p.brand, p.presentation, p.capacity].filter(Boolean).join(' · ') || (sub ? sub.name : 'Sin marca');
+      const prices = g.items.map((x) => (x.price === null || x.price === undefined ? null : x.price));
+      const known = [...new Set(prices.filter((x) => x !== null))].sort((a, b) => a - b);
+      return { key: g.key, items: g.items, label, where: [top && top.name, sub && sub !== top ? sub.name : ''].filter(Boolean).join(' › '),
+        unit: p.unit, known, missing: prices.filter((x) => x === null).length, order: (top ? top.order : 0) * 1000 + (sub ? sub.order || 0 : 0) };
+    });
+    groups.sort((a, b) => a.order - b.order || a.where.localeCompare(b.where, 'es') || a.label.localeCompare(b.label, 'es'));
+    return groups;
+  }
+
+  function openPriceGroups() {
+    const st = App.state;
+    const cur = st.settings.currency;
+    const d = UI.dialog({ title: 'Cambiar precios', cls: 'sheet', html: '' });
+    d.setFoot('<button type="button" class="btn secondary" data-a="close">Cerrar</button>');
+    let q = '';
+    let mode = 'groups';              // 'groups' | 'free'
+    const open = new Set();           // grupos desplegados
+    const unchecked = new Set();      // productos desmarcados dentro de un grupo
+    const freeSel = new Set();        // selección libre
+    const byIdCats = () => new Map(st.categories.map((c) => [c.id, c]));
+    const pTxt = (p) => [p.name, p.color, p.code].filter(Boolean).join(' ');
+    const priceTxt = (p) => (p.price === null || p.price === undefined ? 'sin precio' : money(p.price));
+    const prodRow = (p, checked, attr) => `<label class="pg-p" style="display:flex;gap:8px;align-items:center;padding:6px 0;min-height:40px">
+      <input type="checkbox" ${attr} value="${p.id}" ${checked ? 'checked' : ''} style="width:22px;height:22px;flex:none">
+      <span style="flex:1;min-width:0"><b>${esc(p.name)}</b>${p.color && !p.name.includes(p.color) ? ` <span class="muted">${esc(p.color)}</span>` : ''}</span>
+      <span class="muted" style="flex:none">${esc(priceTxt(p))}</span></label>`;
+    const priceBar = (cls) => `<div style="display:flex;gap:8px;align-items:center;margin-top:8px">
+      <input class="pg-in ${cls}" inputmode="decimal" autocomplete="off" aria-label="Precio (${esc(cur)})" placeholder="Precio" style="flex:1 1 90px;min-width:0">
+      <button type="button" class="btn small" data-a="apply-sel">Aplicar a los marcados</button></div>`;
+
+    const render = () => {
+      const byId = byIdCats();
+      const head = `<div style="display:flex;gap:6px;margin-bottom:10px">
+        <button type="button" class="btn small ${mode === 'groups' ? '' : 'secondary'}" data-a="mode-groups">Por grupo</button>
+        <button type="button" class="btn small ${mode === 'free' ? '' : 'secondary'}" data-a="mode-free">Elegir productos</button></div>
+        <label class="field"><span>Buscar</span><input id="pg-q" type="search" value="${esc(q)}" placeholder="${mode === 'free' ? 'Producto, color, marca…' : 'Marca, categoría…'}" autocomplete="off"></label>`;
+      let body;
+      if (mode === 'groups') {
+        const gs = priceGroups(st.products, byId).filter((g) => !q || (g.label + ' ' + g.where).toLowerCase().includes(q));
+        body = `<p class="muted small-text" style="margin-bottom:8px">Misma marca, presentación y tamaño van juntos (el color, el código y el volumen no cuentan). Escribe el precio y pulsa «Aplicar a todos», o pulsa «Elegir» para marcar solo los que quieras (por ejemplo, dejar fuera los rojos).</p>
+          <div class="list">${gs.map((g) => {
+    const uniform = g.known.length === 1 && !g.missing;
+    const state = uniform ? `Todos a ${esc(money(g.known[0]))}`
+      : g.known.length ? `Precios distintos: ${esc(money(g.known[0]))}${g.known.length > 1 ? ' – ' + esc(money(g.known[g.known.length - 1])) : ''}${g.missing ? ` · ${g.missing} sin precio` : ''}`
+        : 'Sin precio';
+    const isOpen = open.has(g.key);
+    return `<div class="cat-row" data-k="${esc(g.key)}" style="flex-wrap:wrap;gap:8px">
+          <div class="cat-main" style="flex:1 1 100%"><b>${esc(g.label)}</b><span class="muted">${esc(g.where)} · ${g.items.length} producto${g.items.length === 1 ? '' : 's'} · ${esc(state)}</span></div>
+          <input class="pg-in pg-g" inputmode="decimal" autocomplete="off" aria-label="Precio (${esc(cur)}) para ${esc(g.label)}" placeholder="Precio" value="${uniform ? esc(Inventory.fmtNum(g.known[0])) : ''}" style="flex:1 1 90px;min-width:0">
+          <button type="button" class="btn small" data-a="apply-all">${isOpen ? 'Aplicar a los marcados' : 'Aplicar a todos'}</button>
+          <button type="button" class="btn small secondary" data-a="toggle">${isOpen ? 'Ocultar' : 'Elegir…'}</button>
+          ${isOpen ? `<div style="flex:1 1 100%;border-top:1px solid var(--line,#ddd);margin-top:4px">${g.items.map((p) => prodRow(p, !unchecked.has(p.id), 'data-g')).join('')}</div>` : ''}</div>`;
+  }).join('') || '<div class="empty"><p>No hay grupos que coincidan.</p></div>'}</div>`;
+      } else {
+        const list = st.products.filter((p) => !p.archived && (!q || (pTxt(p) + ' ' + (p.brand || '')).toLowerCase().includes(q)));
+        const groups = new Map();
+        for (const p of list) { const c = byId.get(p.subcategoryId) || byId.get(p.categoryId); const k = c ? c.id : ''; if (!groups.has(k)) groups.set(k, { c, items: [] }); groups.get(k).items.push(p); }
+        const arr = [...groups.values()].sort((x, y) => ((x.c && x.c.name) || '').localeCompare((y.c && y.c.name) || '', 'es'));
+        const n = freeSel.size;
+        body = `<p class="muted small-text" style="margin-bottom:8px">Marca los productos que quieras (de cualquier marca o categoría), escribe el precio y aplícalo. Usa el buscador para encontrarlos rápido.</p>
+          <div style="display:flex;gap:6px;margin-bottom:6px"><button type="button" class="btn small secondary" data-a="sel-visible">Marcar los visibles (${list.length})</button><button type="button" class="btn small secondary" data-a="sel-none">Quitar marcas</button></div>
+          ${arr.map((g) => `<div style="margin:8px 0 2px"><b>${esc(g.c ? g.c.name : 'Sin categoría')}</b></div>${g.items.map((p) => prodRow(p, freeSel.has(p.id), 'data-f')).join('')}`).join('') || '<div class="empty"><p>No hay productos que coincidan.</p></div>'}
+          <div style="position:sticky;bottom:0;background:var(--bg,#fff);padding:8px 0"><span class="muted small-text" id="pg-count">${n} marcado${n === 1 ? '' : 's'}</span>${priceBar('pg-free')}</div>`;
+      }
+      d.body.innerHTML = head + body;
+      const inp = d.body.querySelector('#pg-q');
+      inp.addEventListener('input', () => { q = inp.value.trim().toLowerCase(); const pos = inp.selectionStart; render(); const nn = d.body.querySelector('#pg-q'); nn.focus(); nn.setSelectionRange(pos, pos); });
+    };
+    render();
+
+    const run = async (ids, raw, btn, mixedMsg) => {
+      try {
+        if (!ids.length) { UI.toast('No hay productos marcados.', 'error'); return; }
+        if (String(raw).trim() === '') { UI.toast('Escribe un precio.', 'error'); return; }
+        const prices = new Set(ids.map((id) => { const p = st.products.find((x) => x.id === id); return p && p.price !== null && p.price !== undefined ? p.price : null; }));
+        const hasOther = [...prices].some((x) => x !== null);
+        if (mixedMsg && hasOther && prices.size > 1) {
+          const ok = await UI.confirm({ title: 'Cambiar precios', message: `Estos ${ids.length} productos tienen precios distintos. Todos pasarán a ${String(raw).trim()} ${cur}.`, okLabel: 'Aplicar' });
+          if (!ok) return;
+        }
+        btn.disabled = true;
+        const r = await Inventory.setPrices(ids, raw);
+        await App.refresh();
+        UI.toast(r.changed ? `Precio actualizado en ${r.changed} producto${r.changed === 1 ? '' : 's'}.` : 'Ya tenían ese precio.', 'ok');
+        render();
+      } catch (err) { btn.disabled = false; UI.toast(DB.friendlyError(err), 'error'); }
+    };
+    d.body.addEventListener('change', (e) => {
+      const t = e.target;
+      if (t.matches('input[data-g]')) { if (t.checked) unchecked.delete(t.value); else unchecked.add(t.value); }
+      else if (t.matches('input[data-f]')) {
+        if (t.checked) freeSel.add(t.value); else freeSel.delete(t.value);
+        const el = d.body.querySelector('#pg-count'); if (el) el.textContent = `${freeSel.size} marcado${freeSel.size === 1 ? '' : 's'}`;
+      }
+    });
+    d.body.addEventListener('click', async (e) => {
+      const b = e.target.closest('[data-a]');
+      if (!b || b.disabled) return;
+      const a = b.dataset.a;
+      if (a === 'mode-groups' || a === 'mode-free') { mode = a === 'mode-free' ? 'free' : 'groups'; q = ''; render(); return; }
+      if (a === 'sel-none') { freeSel.clear(); render(); return; }
+      if (a === 'sel-visible') { d.body.querySelectorAll('input[data-f]').forEach((i) => freeSel.add(i.value)); render(); return; }
+      const row = b.closest('[data-k]');
+      if (a === 'toggle') { const k = row.dataset.k; if (open.has(k)) open.delete(k); else open.add(k); render(); return; }
+      if (a === 'apply-all') {
+        const g = priceGroups(st.products, byIdCats()).find((x) => x.key === row.dataset.k);
+        if (!g) return;
+        const ids = g.items.filter((p) => !open.has(g.key) || !unchecked.has(p.id)).map((p) => p.id);
+        await run(ids, row.querySelector('.pg-g').value, b, true);
+      } else if (a === 'apply-sel') {
+        await run([...freeSel], d.body.querySelector('.pg-free').value, b, true);
+      }
+    });
+    d.foot.addEventListener('click', (e) => { if (e.target.closest('[data-a=close]')) d.close(); });
+  }
+
   globalThis.Categories = {
     NAME_MAX, sortCategories, rootsOf, childrenOf,
     create, rename, move, setGeneralPrice, remove, moveAllProducts,
     productCount, resolvePrice, pathNames, pathText,
-    askTarget, openManager,
+    askTarget, openManager, openPriceGroups, priceGroups,
   };
 })();
