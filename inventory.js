@@ -4,7 +4,9 @@
    se valida, se actualiza la cantidad y se guarda el movimiento, o no se hace nada. */
 (function () {
   const { AppError, DB } = globalThis;
-  const MOVEMENT_TYPES = ['entrada', 'salida', 'ajuste'];
+  const MOVEMENT_TYPES = ['entrada', 'salida', 'ajuste', 'baja'];
+  /* Motivos de baja integrados. Se pueden añadir otros en Configuración. «Ajuste de inventario» se hace con «Ajustar existencia». */
+  const BAJA_REASONS = ['Pérdida', 'Producto dañado', 'Retiro de mercancía'];
   const LIMITS = { name: 120, brand: 60, code: 60, unit: 20, notes: 1000, note: 300, color: 60, presentation: 80, capacity: 60, fieldName: 40, fieldValue: 300, maxFields: 30 };
   const R = (r) => DB.req(r);
   let lastTs = 0;
@@ -179,6 +181,10 @@
       orderId: f.orderId || null,
       price: typeof f.price === 'number' && Number.isFinite(f.price) ? f.price : null,
       party: f.party || '',
+      reason: f.reason || '',
+      discrepancy: !!f.discrepancy,
+      resolved: !!f.resolved,
+      occurredAt: typeof f.occurredAt === 'number' ? f.occurredAt : null,
       createdAt: f.createdAt,
     };
   }
@@ -414,14 +420,17 @@
      opId identifica el pedido: si llega repetido (doble pulsación) no se duplica. */
   async function registerBatch(input) {
     const type = input.type;
-    if (type !== 'entrada' && type !== 'salida') throw new AppError('VALIDATION', 'Tipo de pedido no válido.');
+    if (type !== 'entrada' && type !== 'salida' && type !== 'baja') throw new AppError('VALIDATION', 'Tipo de pedido no válido.');
     const opId = input.opId || DB.uuid();
     const party = String(input.party || '').trim().slice(0, 80);
     const note = String(input.note || '').trim().slice(0, LIMITS.note);
+    const reason = type === 'baja' ? String(input.reason || '').trim().slice(0, 60) : '';
+    if (type === 'baja' && !reason) throw new AppError('VALIDATION', 'Elige el motivo de la baja.', { field: 'reason' });
+    const occurredAt = type === 'baja' && typeof input.occurredAt === 'number' && Number.isFinite(input.occurredAt) ? input.occurredAt : null;
     const merged = new Map();
     const prices = new Map();
     for (const it of input.items || []) {
-      if (it.price !== null && it.price !== undefined && it.price !== '') {
+      if (type === 'salida' && it.price !== null && it.price !== undefined && it.price !== '') {
         const pp = Number(it.price);
         if (!Number.isFinite(pp) || pp < 0 || pp > 1e9) throw new AppError('VALIDATION', 'Hay un precio no válido en el carrito.');
         prices.set(it.productId, round2(pp));
@@ -437,30 +446,89 @@
       const row = await R(S.settings.get('allowOversell'));
       const oversell = !!(row && row.value === true);
       const work = [];
+      const problems = [];
       for (const [productId, amount] of merged) {
         const product = await R(S.products.get(productId));
         if (!product) throw new AppError('NOT_FOUND', 'Un producto del carrito ya no existe. Quítalo y vuelve a intentarlo.');
         if (product.archived) throw new AppError('ARCHIVED', `«${product.name}» está archivado. Quítalo del carrito.`);
         const before = product.quantity === undefined ? null : product.quantity;
-        if (before === null) throw new AppError('UNKNOWN_QTY', `«${product.name}» no tiene existencia registrada. Establécela primero con «Ajustar existencia».`);
+        if (before === null) {
+          if (type === 'entrada') throw new AppError('UNKNOWN_QTY', `«${product.name}» no tiene existencia registrada. Establécela primero con «Ajustar existencia».`);
+          problems.push(`«${product.name}»: la existencia no está confirmada`);
+          work.push({ product, amount, before, after: null, discrepancy: true });
+          continue;
+        }
         const after = type === 'entrada' ? round6(before + amount) : round6(before - amount);
-        if (after < 0 && !oversell) throw new AppError('INSUFFICIENT', `«${product.name}»: solo hay ${fmtNum(before)} y pides ${fmtNum(amount)}. No se registró nada.`);
+        if (after < 0 && !oversell) {
+          problems.push(`«${product.name}»: solo hay ${fmtNum(before)} y se retiran ${fmtNum(amount)}`);
+          work.push({ product, amount, before, after: before, discrepancy: true });
+          continue;
+        }
         work.push({ product, amount, before, after });
+      }
+      if (problems.length && !input.allowDiscrepancy) {
+        throw new AppError('DISCREPANCY', `Hay productos sin existencia suficiente o sin confirmar:\n${problems.join('\n')}`, { discrepancy: true, problems });
       }
       const out = [];
       let i = 0;
       for (const w of work) {
         const mv = await buildMovement(S, w.product, {
           id: `${opId}:${i++}`, type, quantity: w.amount, before: w.before, after: w.after, note,
-          estimated: w.product.quantityStatus === 'estimated', orderId: opId, party, price: type === 'salida' && prices.has(w.product.id) ? prices.get(w.product.id) : null, createdAt: nextTs(),
+          estimated: w.product.quantityStatus === 'estimated', orderId: opId, party, reason, occurredAt,
+          discrepancy: !!w.discrepancy, resolved: false,
+          price: type === 'salida' && prices.has(w.product.id) ? prices.get(w.product.id) : null, createdAt: nextTs(),
         });
         await R(S.movements.put(mv));
-        w.product.quantity = w.after;
-        w.product.updatedAt = Date.now();
-        await R(S.products.put(w.product));
+        if (!w.discrepancy) {
+          w.product.quantity = w.after;
+          w.product.updatedAt = Date.now();
+          await R(S.products.put(w.product));
+        }
         out.push(mv);
       }
-      return { movements: out, orderId: opId };
+      return { movements: out, orderId: opId, discrepancies: out.filter((m) => m.discrepancy).length };
+    });
+  }
+
+  /* Discrepancia: el movimiento se guardó pero NO cambió la existencia (porque no estaba confirmada o no alcanzaba).
+     Cuando se revisa y se corrige con un Ajuste, se marca como revisada. */
+  function resolveDiscrepancy(id, note) {
+    const clean = String(note || '').trim().slice(0, LIMITS.note);
+    return DB.tx(['movements'], 'readwrite', async (S) => {
+      const m = await R(S.movements.get(id));
+      if (!m) throw new AppError('NOT_FOUND', 'El movimiento ya no existe.');
+      if (!m.discrepancy) throw new AppError('VALIDATION', 'Este movimiento no tiene discrepancia.');
+      m.resolved = true;
+      m.resolvedAt = Date.now();
+      if (clean) m.note = m.note ? `${m.note} · Revisión: ${clean}` : `Revisión: ${clean}`;
+      await R(S.movements.put(m));
+      return m;
+    });
+  }
+
+  function pendingDiscrepancies() {
+    return DB.tx(['movements'], 'readonly', async (S) => (await R(S.movements.getAll())).filter((m) => m.discrepancy && !m.resolved));
+  }
+
+  /* Resumen de bajas: cuánto se perdió o retiró, de qué producto y por qué motivo.
+     Las bajas con discrepancia no se suman (no cambiaron la existencia): se cuentan aparte. */
+  function summarizeBajas(filter) {
+    const f = filter || {};
+    return DB.tx(['movements'], 'readonly', async (S) => {
+      const all = (await R(S.movements.getAll())).filter((m) => m.type === 'baja');
+      const rows = new Map();
+      for (const m of all) {
+        const when = m.occurredAt || m.createdAt;
+        if (f.from && when < f.from) continue;
+        if (f.to && when > f.to) continue;
+        if (f.reason && m.reason !== f.reason) continue;
+        const key = `${m.productId}|${m.reason}`;
+        const r = rows.get(key) || { productId: m.productId, productName: m.productName, unit: m.unit, reason: m.reason, total: 0, count: 0, pending: 0 };
+        if (m.discrepancy && !m.resolved) r.pending += m.quantity; else r.total = round6(r.total + m.quantity);
+        r.count++;
+        rows.set(key, r);
+      }
+      return [...rows.values()].sort((a, b) => collator.compare(a.productName, b.productName));
     });
   }
 
@@ -484,11 +552,14 @@
     const match = (m) => {
       if (f.productId && m.productId !== f.productId) return false;
       if (f.type && m.type !== f.type) return false;
+      if (f.reason && m.reason !== f.reason) return false;
+      if (f.discrepancy === 'pending' && !(m.discrepancy && !m.resolved)) return false;
       if (f.orderId && m.orderId !== f.orderId) return false;
-      if (f.from && m.createdAt < f.from) return false;
-      if (f.to && m.createdAt > f.to) return false;
+      const when = m.occurredAt || m.createdAt;
+      if (f.from && when < f.from) return false;
+      if (f.to && when > f.to) return false;
       if (tokens.length) {
-        const hay = norm(`${m.productName} ${m.brand} ${m.code} ${m.categoryName} ${m.subcategoryName} ${m.note} ${m.party || ''}`);
+        const hay = norm(`${m.productName} ${m.brand} ${m.code} ${m.categoryName} ${m.subcategoryName} ${m.note} ${m.party || ''} ${m.reason || ''}`);
         if (!tokens.every((t) => hay.includes(t))) return false;
       }
       return true;
@@ -572,11 +643,11 @@
   }
 
   globalThis.Inventory = {
-    MOVEMENT_TYPES, LIMITS,
+    MOVEMENT_TYPES, BAJA_REASONS, LIMITS,
     norm, fmtNum, fmtSigned, unitText, qtyText, parseDecimal, round2, round6, nextTs, collator,
     validateProductInput, createProduct, updateProduct, setPhoto, setArchived,
     deleteProduct, duplicateProduct, moveProducts, countMovements,
-    registerMovement, registerBatch, updateMovementNote, listMovements,
+    registerMovement, registerBatch, resolveDiscrepancy, pendingDiscrepancies, summarizeBajas, updateMovementNote, listMovements,
     filterProducts, findSimilar,
   };
 })();

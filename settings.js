@@ -6,7 +6,7 @@
   const esc = (s) => UI.esc(s);
 
   const APP_ID = 'almacen-inventario';
-  const APP_VERSION = '1.3.0';
+  const APP_VERSION = '1.4.0';
   const BACKUP_SCHEMA = 2; // versión del formato de copia (coincide con la versión de la base de datos)
   const LOCAL_ONLY_KEYS = ['lastBackupAt', 'syncState', 'carts']; // propios de cada teléfono: nunca viajan en copias
 
@@ -17,10 +17,11 @@
     allowOversell: false,       // permitir salidas mayores a la existencia
     showArchivedPhotos: false,  // fotos de productos archivados en la galería
     defaultStatus: 'active',    // active | all
-    unknownQtyLabel: 'Sin registrar',
+    unknownQtyLabel: 'Pendiente de conteo',
     listPrefs: null,
     lastBackupAt: null,
     quickSteps: [1, 5, 10, 12, 50], // botones rápidos del carrito (se editan en Configuración)
+    customReasons: [],          // otros motivos de baja (se añaden en Configuración)
     carts: null,                // carritos de entrada/salida sin confirmar (de este teléfono)
     syncState: null,            // datos de sincronización de ESTE teléfono (no se copia ni se comparte)
   };
@@ -220,7 +221,7 @@
         id: m.id, productId: m.productId, productName: String(m.productName || '').slice(0, 120), brand: String(m.brand || ''), code: String(m.code || ''),
         categoryName: String(m.categoryName || ''), subcategoryName: String(m.subcategoryName || ''), type: m.type,
         quantity: isNum(m.quantity) ? m.quantity : null, before: isNum(m.before) ? m.before : null, after: isNum(m.after) ? m.after : null,
-        unit: String(m.unit || ''), note: String(m.note || '').slice(0, 300), initial: !!m.initial, estimated: !!m.estimated, orderId: isStr(m.orderId) ? m.orderId : null, price: isNum(m.price) && m.price >= 0 ? m.price : null, party: String(m.party || '').slice(0, 80), createdAt: m.createdAt,
+        unit: String(m.unit || ''), note: String(m.note || '').slice(0, 300), initial: !!m.initial, estimated: !!m.estimated, orderId: isStr(m.orderId) ? m.orderId : null, reason: String(m.reason || '').slice(0, 60), discrepancy: !!m.discrepancy, resolved: !!m.resolved, occurredAt: isNum(m.occurredAt) ? m.occurredAt : null, price: isNum(m.price) && m.price >= 0 ? m.price : null, party: String(m.party || '').slice(0, 80), createdAt: m.createdAt,
       });
     }
 
@@ -251,6 +252,7 @@
         if (r.key === 'fontScale' && ![90, 100, 115, 130].includes(r.value)) continue;
         if (r.key === 'defaultStatus' && !['active', 'all'].includes(r.value)) continue;
         if (r.key === 'quickSteps' && !(Array.isArray(r.value) && r.value.length <= 8 && r.value.every((x) => isNum(x) && x > 0 && x <= 100000))) continue;
+        if (r.key === 'customReasons' && !(Array.isArray(r.value) && r.value.length <= 20 && r.value.every((x) => typeof x === 'string' && x.length <= 60))) continue;
         if (r.key === 'listPrefs' && r.value !== null && typeof r.value !== 'object') continue;
         clean.settings.push({ key: r.key, value: r.value });
       }
@@ -612,12 +614,14 @@
           <label class="field"><span>Moneda</span><input id="cfg-currency" maxlength="8" value="${esc(s.currency)}" autocapitalize="characters" autocomplete="off">
             <span class="hint">Se muestra en precios y listados. No hay conversiones automáticas.</span></label>
           <label class="field"><span>Texto para cantidad no registrada</span><input id="cfg-unknown" maxlength="30" value="${esc(s.unknownQtyLabel)}" autocomplete="off">
-            <span class="hint">«Sin registrar» no es lo mismo que 0: significa que todavía no sabes cuántas hay.</span></label>
+            <span class="hint">«Pendiente de conteo» no es lo mismo que 0: significa que todavía no sabes cuántas hay.</span></label>
           <label class="switch"><span class="sw-text">Permitir salidas mayores a la existencia<small>Por defecto no se puede sacar más de lo que hay. Si lo activas, la existencia puede quedar en negativo.</small></span><input type="checkbox" id="cfg-oversell" ${s.allowOversell ? 'checked' : ''}></label>
           <label class="switch"><span class="sw-text">Mostrar productos archivados por defecto<small>Si no, solo se ven al elegir «Mostrar» en los filtros.</small></span><input type="checkbox" id="cfg-archived" ${s.defaultStatus === 'all' ? 'checked' : ''}></label>
           <label class="switch"><span class="sw-text">Fotos de archivados en la galería<small>Los productos archivados conservan su foto; aquí decides si se ve en la galería.</small></span><input type="checkbox" id="cfg-archphotos" ${s.showArchivedPhotos ? 'checked' : ''}></label>
           <label class="field"><span>Botones rápidos del carrito</span><input id="cfg-quick" inputmode="decimal" maxlength="40" value="${esc((s.quickSteps || []).join(', '))}" autocomplete="off">
             <span class="hint">Cantidades que se suman con un toque, separadas por comas. Ej.: 1, 5, 10, 12, 50 (máximo 8).</span></label>
+          <label class="field"><span>Otros motivos de baja</span><input id="cfg-reasons" maxlength="200" value="${esc((s.customReasons || []).join(', '))}" autocomplete="off">
+            <span class="hint">Se añaden a Pérdida, Producto dañado y Retiro de mercancía. Sepáralos con comas. Ej.: Muestra, Regalo, Vencido.</span></label>
           <button type="button" class="btn secondary" data-s="categories">Categorías y precios generales</button>
         </div>
       </div>
@@ -712,7 +716,11 @@
         if (t.id === 'cfg-oversell') await set('allowOversell', t.checked);
         else if (t.id === 'cfg-archived') { await set('defaultStatus', t.checked ? 'all' : 'active'); App.state.filters.status = t.checked ? 'all' : 'active'; }
         else if (t.id === 'cfg-archphotos') { await set('showArchivedPhotos', t.checked); Gallery.renderSection(); }
-        else if (t.id === 'cfg-quick') {
+        else if (t.id === 'cfg-reasons') {
+          const vals = [...new Set(t.value.split(',').map((x) => x.trim().slice(0, 60)).filter(Boolean))].slice(0, 20);
+          await set('customReasons', vals);
+          t.value = vals.join(', ');
+        } else if (t.id === 'cfg-quick') {
           const vals = [...new Set(t.value.split(/[\s,;]+/).map((x) => Number(x.replace(',', '.'))).filter((x) => Number.isFinite(x) && x > 0 && x <= 100000))].slice(0, 8);
           const use = vals.length ? vals : DEFAULTS.quickSteps;
           await set('quickSteps', use);

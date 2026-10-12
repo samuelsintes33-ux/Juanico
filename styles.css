@@ -451,3 +451,11 @@ body.cart-on .fab { display: none; }
 .cp { width: 110px; min-height: 40px; text-align: right; border-radius: 10px; border: 1px solid var(--border); background: var(--surface); color: var(--text); padding: 0 8px; }
 .ci-sub { font-weight: 750; color: var(--text); }
 .ci-grand { font-size: 1.15rem; margin-top: 6px; color: var(--text); }
+
+.cart-bar.baja { border-top-color: #b91c1c; }
+.sumrow { display: flex; justify-content: space-between; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+#mv-types { flex-wrap: wrap; }
+#mv-types button { flex: 1 1 28%; }
+
+.share-row { grid-column: 1 / -1; display: flex; }
+.share-row .btn { width: 100%; }

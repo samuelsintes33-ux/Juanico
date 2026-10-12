@@ -71,8 +71,14 @@
       if (wantsPrice) {
         extras.push(hasPrice ? `${Inventory.fmtNum(price.value)} ${currency}` : (o.noPriceLabel || 'Sin precio'));
       }
+      const imgRow = {
+        name: line,
+        detail: [p.color && !norm(line).includes(norm(p.color)) ? p.color : '', p.presentation, p.capacity].filter(Boolean).join(' · '),
+        qty: wantsQty ? extras[0] : '',
+        price: wantsPrice ? extras[extras.length - 1] : '',
+      };
       line = ['- ' + line, ...extras].join(' — ');
-      rows.push({ p, cat, sub, line, name: p.name });
+      rows.push({ p, cat, sub, line, name: p.name, img: imgRow });
     }
 
     const catIds = new Set(rows.map((r) => (r.cat ? r.cat.id : '')));
@@ -114,7 +120,11 @@
       g.rows.forEach((r) => lines.push(r.line));
       if (gi < glist.length - 1) lines.push('');
     });
-    return { text: rows.length ? lines.join('\n') : '', count: rows.length, excluded };
+    const structure = glist.map((g) => {
+      const r0 = g.rows[0];
+      return { catId: r0.cat ? r0.cat.id : '', catName: r0.cat ? r0.cat.name : 'Sin categoría', subName: r0.sub ? r0.sub.name : '', rows: g.rows.map((r) => r.img) };
+    });
+    return { text: rows.length ? lines.join('\n') : '', count: rows.length, excluded, structure, wantsQty, wantsPrice };
   }
 
   /* ---------------- Interfaz ---------------- */
@@ -187,10 +197,10 @@
     });
   }
 
-  function openGenerator() {
+  function openGenerator(preset) {
     const st = App.state;
     const prefs = Object.assign({}, DEFAULT_PREFS, st.settings.listPrefs || {});
-    const s = { scopeType: 'all', scopeId: '', ids: new Set(), title: '', note: '' };
+    const s = { scopeType: (preset && preset.scopeType) || 'all', scopeId: (preset && preset.scopeId) || '', ids: new Set(), title: '', note: '' };
 
     const formatsHtml = FORMATS.map((f) => `
       <label class="format-opt" data-f="${f.id}"><input type="radio" name="l-format" value="${f.id}" ${prefs.format === f.id ? 'checked' : ''}>
@@ -234,7 +244,7 @@
         <pre class="list-preview" id="l-preview" aria-live="polite"></pre>
       </div>`,
     });
-    d.setFoot(`<button type="button" class="btn secondary" data-l="copy">Copiar texto</button><button type="button" class="btn secondary" data-l="image">Como imagen</button><button type="button" class="btn" data-l="share">Compartir</button>`);
+    d.setFoot(`<button type="button" class="btn secondary" data-l="copy">Copiar texto</button><button type="button" class="btn secondary" data-l="image">Compartir imágenes</button><button type="button" class="btn" data-l="share">Compartir</button>`);
 
     const $ = (id) => d.body.querySelector(id);
     $('#l-order').value = prefs.order;
@@ -296,6 +306,7 @@
       if (!sel.options.length) {
         sel.innerHTML = `<option value="">(Aún no hay ${s.scopeType === 'sub' ? 'subcategorías' : 'categorías'})</option>`;
       }
+      if (s.scopeId && [...sel.options].some((o) => o.value === s.scopeId)) sel.value = s.scopeId;
       s.scopeId = sel.value;
     };
 
@@ -328,11 +339,19 @@
         const ok = await UI.copyText(lastText);
         UI.toast(ok ? 'Texto copiado. Ya puedes pegarlo en WhatsApp u otra aplicación.' : 'No se pudo copiar automáticamente. Mantén pulsado el texto de la vista previa para copiarlo.', ok ? 'ok' : 'error');
       } else if (b.dataset.l === 'image') {
-        try {
-          const blob = await Cart.textImage(lastText.split('\n'));
-          const res = await Cart.shareBlob(blob, 'listado.png', 'image/png', 'Listado');
-          if (res === 'downloaded') UI.toast('Se guardó la imagen en tu teléfono. Envíala desde WhatsApp › adjuntar › galería.');
-        } catch (err) { UI.toast(DB.friendlyError(err), 'error'); }
+        await UI.once('list-img', async () => {
+          try {
+            const r = generate(options(), st.products, st.catById);
+            UI.toast('Creando imágenes…');
+            const imgs = await ShareImg.render(r.structure, {
+              showQty: r.wantsQty, showPrice: r.wantsPrice,
+              subtitle: [$('#l-title').value.trim(), new Date().toLocaleDateString('es', { dateStyle: 'long' })].filter(Boolean).join(' · '),
+            });
+            const res = await ShareImg.share(imgs, 'Listado');
+            if (res === 'downloaded') UI.toast(`Se guardaron ${imgs.length} imagen${imgs.length === 1 ? '' : 'es'} en tu teléfono. Envíalas desde WhatsApp › adjuntar › galería.`);
+            else if (res === 'shared') UI.toast(`${imgs.length} imagen${imgs.length === 1 ? '' : 'es'} enviada${imgs.length === 1 ? '' : 's'} al menú de compartir.`, 'ok');
+          } catch (err) { UI.toast(DB.friendlyError(err), 'error'); }
+        });
       } else if (b.dataset.l === 'share') {
         if (navigator.share) {
           try {
@@ -347,6 +366,7 @@
       }
     });
 
+    $('#l-scope').value = s.scopeType;
     fillScopeIds();
     update();
     return d;

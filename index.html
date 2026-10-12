@@ -97,12 +97,15 @@
           <button type="button" data-type="entrada" aria-pressed="false">Entradas</button>
           <button type="button" data-type="salida" aria-pressed="false">Salidas</button>
           <button type="button" data-type="ajuste" aria-pressed="false">Ajustes</button>
+          <button type="button" data-type="baja" aria-pressed="false">Bajas</button>
+          <button type="button" data-type="__disc" aria-pressed="false">⚠ Discrep.</button>
         </div>
         <div class="row2 dates">
           <label class="field"><span>Desde</span><input id="mv-from" type="date"></label>
           <label class="field"><span>Hasta</span><input id="mv-to" type="date"></label>
         </div>
         <div id="mv-product-chip"></div>
+        <div id="mv-summary"></div>
         <div id="mv-list" class="list" aria-live="polite"></div>
         <div id="mv-more-wrap" class="center" hidden>
           <button id="mv-more" class="btn secondary" type="button">Mostrar más</button>
@@ -146,6 +149,7 @@
   <script src="inventory.js"></script>
   <script src="categories.js"></script>
   <script src="gallery.js"></script>
+  <script src="shareimg.js"></script>
   <script src="lists.js"></script>
   <script src="settings.js"></script>
   <script src="sync.js"></script>

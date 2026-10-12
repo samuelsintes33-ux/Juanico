@@ -252,7 +252,7 @@
      Estado y carga de datos
      ===================================================================== */
   const state = {
-    products: [], categories: [], catById: new Map(),
+    products: [], categories: [], catById: new Map(), discr: new Map(),
     settings: Object.assign({}, Settings.DEFAULTS),
     tab: 'almacen',
     filters: { query: '', categoryId: '', subcategoryId: '', sort: 'name', status: 'active' },
@@ -269,6 +269,10 @@
       categories: await DB.req(S.categories.getAll()),
     }));
     state.products = snap.products;
+    try {
+      state.discr = new Map();
+      for (const m of await Inventory.pendingDiscrepancies()) { const x = state.discr.get(m.productId) || { n: 0, units: 0 }; x.n++; x.units += m.quantity || 0; state.discr.set(m.productId, x); }
+    } catch (_) { state.discr = new Map(); }
     state.categories = Categories.sortCategories(snap.categories);
     state.catById = new Map(snap.categories.map((c) => [c.id, c]));
     // Si un filtro apunta a una categoría que ya no existe, se limpia.
@@ -398,6 +402,12 @@
         }
       }
     }
+    // Botón para compartir (imágenes) lo que se está viendo
+    const shareBtn = !searching && state.products.length
+      ? (cat ? `<button type="button" class="btn small secondary" data-share="category" data-id="${cat.id}">Compartir «${esc(cat.name)}»</button>`
+        : (!f.categoryId && !state.flat ? '<button type="button" class="btn small secondary" data-share="all">Compartir inventario completo</button>' : ''))
+      : '';
+    if (shareBtn) html = `<div class="tiles-note share-row">${shareBtn}</div>${html}`;
     tiles.innerHTML = html;
     tiles.hidden = !html;
     return { showList, searching, cat, sub, subsMode: !!(html && cat && !sub) };
@@ -500,6 +510,7 @@
           <button type="button" class="btn secondary small" data-a="photo">${p.hasPhoto ? 'Cambiar foto' : 'Añadir foto'}</button>
           ${p.hasPhoto ? '<button type="button" class="btn danger-ghost small" data-a="rmphoto">Quitar foto</button>' : ''}
         </div>
+        ${state.discr.get(p.id) ? `<div class="notice">⚠ Discrepancia pendiente de revisión: ${esc(String(state.discr.get(p.id).n))} movimiento${state.discr.get(p.id).n === 1 ? '' : 's'} (${esc(fmtNum(state.discr.get(p.id).units))} unidades) sin descontar porque la existencia no estaba confirmada o no alcanzaba. Corrige la existencia con un Ajuste y marca la discrepancia como revisada en Movimientos.</div>` : ''}
         ${p.archived ? '<div class="notice">Este producto está archivado: no aparece en la lista normal, pero conserva su historial.</div>' : ''}
         <div class="kv">
           <div><div class="k">Existencia</div><div class="v big">${qtyBig}</div></div>
@@ -518,7 +529,8 @@
         <div class="actions-grid">
           <button type="button" class="btn" data-a="entrada">＋ Entrada</button>
           <button type="button" class="btn" data-a="salida">− Salida</button>
-          <button type="button" class="btn secondary span2" data-a="ajuste">Ajustar existencia</button>
+          <button type="button" class="btn secondary" data-a="ajuste">Ajustar existencia</button>
+          <button type="button" class="btn secondary" data-a="baja">Baja: pérdida o retiro</button>
         </div>`}
         <div class="section-title">Producto</div>
         <div class="actions-grid">
@@ -548,6 +560,11 @@
             UI.toast('Foto eliminada.', 'ok');
             await after();
           }
+        } else if (a === 'baja') {
+          Cart.addToCart('baja', id, Math.max(1, Cart.qty('baja', id)));
+          d.close();
+          Cart.setMode('baja');
+          Cart.open('baja');
         } else if (a === 'entrada' || a === 'salida' || a === 'ajuste') {
           await openMovement(id, a, after);
         } else if (a === 'history') { d.close(); showHistory(id); }
@@ -918,12 +935,12 @@
   /* =====================================================================
      Movimientos (historial)
      ===================================================================== */
-  const TYPE_LABEL = { entrada: 'Entrada', salida: 'Salida', ajuste: 'Ajuste' };
-  const TYPE_CLASS = { entrada: 'in', salida: 'out', ajuste: 'adj' };
+  const TYPE_LABEL = { entrada: 'Entrada', salida: 'Salida', ajuste: 'Ajuste', baja: 'Baja' };
+  const TYPE_CLASS = { entrada: 'in', salida: 'out', ajuste: 'adj', baja: 'out' };
 
   function mvQtyText(m) {
     if (m.type === 'entrada') return `+${fmtNum(m.quantity)}`;
-    if (m.type === 'salida') return `−${fmtNum(m.quantity)}`;
+    if (m.type === 'salida' || m.type === 'baja') return `−${fmtNum(m.quantity)}${m.discrepancy ? ' ⚠' : ''}`;
     if (m.quantity === null) return `= ${fmtNum(m.after)}`;
     return Inventory.fmtSigned(m.quantity);
   }
@@ -937,7 +954,7 @@
     const token = ++mv.token;
     try {
       const r = await Inventory.listMovements({
-        productId: mv.productId, type: mv.type, q: mv.q, from: dayStart(mv.from), to: dayEnd(mv.to),
+        productId: mv.productId, type: mv.type === '__disc' ? '' : mv.type, discrepancy: mv.type === '__disc' ? 'pending' : '', q: mv.q, from: dayStart(mv.from), to: dayEnd(mv.to),
       }, 50, mv.offset);
       if (token !== mv.token) return;
       mv.items = mv.items.concat(r.items);
@@ -966,16 +983,30 @@
       box.innerHTML = mv.items.map((m) => {
         const cat = [m.categoryName, m.subcategoryName].filter(Boolean).join(' › ');
         const meta = [m.party ? `👤 ${m.party}` : '', m.brand, cat].filter(Boolean).join(' · ');
+        const whenTs = m.occurredAt || m.createdAt;
         const range = `${m.before === null ? 'Sin registrar' : fmtNum(m.before)} → ${fmtNum(m.after)}${m.estimated ? ' (aprox.)' : ''}`;
         return `<button type="button" class="card mv" data-mid="${m.id}">
-          <div class="mv-top"><div><span class="badge ${TYPE_CLASS[m.type]}">${TYPE_LABEL[m.type]}${m.initial ? ' inicial' : ''}</span>
+          <div class="mv-top"><div><span class="badge ${TYPE_CLASS[m.type]}">${TYPE_LABEL[m.type]}${m.initial ? ' inicial' : ''}${m.reason ? ` · ${esc(m.reason)}` : ''}</span>${m.discrepancy ? ` <span class="badge arch">${m.resolved ? 'Discrepancia revisada' : 'Discrepancia pendiente'}</span>` : ''}
             <div class="mv-name">${esc(m.productName)}</div></div><div class="mv-qty ${TYPE_CLASS[m.type]}">${esc(mvQtyText(m))}</div></div>
           ${meta ? `<div class="mv-meta">${esc(meta)}</div>` : ''}
-          <div class="mv-meta"><span>${esc(range)}</span><span>${esc(UI.fmtDateTime(m.createdAt))}</span></div>
+          <div class="mv-meta"><span>${esc(range)}</span><span>${esc(m.occurredAt ? new Date(m.occurredAt).toLocaleDateString('es', { dateStyle: 'medium' }) : UI.fmtDateTime(m.createdAt))}</span></div>
           ${m.note ? `<div class="mv-note">${esc(m.note)}</div>` : ''}</button>`;
       }).join('');
     }
     $('mv-more-wrap').hidden = !mv.hasMore;
+    renderBajaSummary();
+  }
+
+  /* Resumen de bajas (qué producto, cuánto y por qué), según las fechas elegidas. */
+  async function renderBajaSummary() {
+    const box = $('mv-summary');
+    if (!box) return;
+    if (state.mv.type !== 'baja') { box.innerHTML = ''; return; }
+    try {
+      const rows = await Inventory.summarizeBajas({ from: dayStart(state.mv.from), to: dayEnd(state.mv.to) });
+      if (state.mv.type !== 'baja') return;
+      box.innerHTML = rows.length ? `<div class="card"><h3 style="margin:0 0 6px">Resumen de bajas</h3><div class="muted small-text" style="margin-bottom:6px">Total por producto y motivo en el período elegido. No son ventas.</div>${rows.map((r) => `<div class="sumrow"><span>${esc(r.productName)}<br><span class="muted small-text">${esc(r.reason)}${r.pending ? ` · ⚠ ${esc(fmtNum(r.pending))} sin descontar (discrepancia)` : ''}</span></span><b>${esc(fmtNum(r.total))} ${esc(r.unit || '')}</b></div>`).join('')}</div>` : '';
+    } catch (_) { box.innerHTML = ''; }
   }
 
   function showHistory(productId) {
@@ -995,7 +1026,9 @@
     const cat = [m.categoryName, m.subcategoryName].filter(Boolean).join(' › ');
     const html = `<div class="stack">
       <div><span class="badge ${TYPE_CLASS[m.type]}">${TYPE_LABEL[m.type]}${m.initial ? ' (existencia inicial)' : ''}</span></div>
-      ${m.party ? `<div class="notice info">${m.type === 'salida' ? 'Cliente' : 'Proveedor / procedencia'}: <b>${esc(m.party)}</b></div>` : ''}
+      ${m.reason ? `<div class="notice info">Motivo: <b>${esc(m.reason)}</b> · no es una venta ni genera ingresos</div>` : ''}
+      ${m.discrepancy ? `<div class="notice">${m.resolved ? '✔ Discrepancia revisada.' : '⚠ <b>Discrepancia pendiente de revisión.</b> Este movimiento NO descontó existencias porque no estaban confirmadas o no alcanzaban. Corrige la existencia con un Ajuste y luego márcala como revisada.'}</div>` : ''}
+      ${m.party ? `<div class="notice info">${m.type === 'salida' ? 'Cliente' : m.type === 'baja' ? 'Quién retira / reporta' : 'Proveedor / procedencia'}: <b>${esc(m.party)}</b></div>` : ''}
       <div id="md-order"></div>
       <div class="kv">
         <div class="full"><div class="k">Producto</div><div class="v">${esc(m.productName)}${p && p.archived ? ' <span class="badge arch">Archivado</span>' : ''}${!p ? ' <span class="badge arch">Eliminado</span>' : ''}</div></div>
@@ -1003,14 +1036,15 @@
         <div><div class="k">Código</div><div class="v">${esc(m.code || '—')}</div></div>
         <div class="full"><div class="k">Categoría (cuando se registró)</div><div class="v">${esc(cat || 'Sin categoría')}</div></div>
         <div><div class="k">${m.type === 'ajuste' ? 'Corrección' : 'Cantidad'}</div><div class="v">${esc(mvQtyText(m))}${m.unit ? ' ' + esc(m.unit) : ''}</div></div>
-        <div><div class="k">Fecha</div><div class="v" style="font-size:.95rem">${esc(UI.fmtDateTime(m.createdAt))}</div></div>
-        <div><div class="k">Cantidad anterior</div><div class="v">${m.before === null ? 'Sin registrar' : esc(fmtNum(m.before))}</div></div>
-        <div><div class="k">Cantidad posterior</div><div class="v">${esc(fmtNum(m.after))}</div></div>
+        <div><div class="k">Fecha</div><div class="v" style="font-size:.95rem">${esc(m.occurredAt ? new Date(m.occurredAt).toLocaleDateString('es', { dateStyle: 'medium' }) : UI.fmtDateTime(m.createdAt))}</div>${m.occurredAt ? `<div class="muted small-text">Registrado: ${esc(UI.fmtDateTime(m.createdAt))}</div>` : ''}</div>
+        <div><div class="k">Cantidad anterior</div><div class="v">${m.before === null ? 'Sin confirmar' : esc(fmtNum(m.before))}</div></div>
+        <div><div class="k">Cantidad posterior</div><div class="v">${m.after === null ? 'Sin confirmar' : esc(fmtNum(m.after))}</div></div>
       </div>
       <label class="field"><span>Nota</span><input id="md-note" maxlength="300" value="${esc(m.note)}" placeholder="Sin nota"></label>
       <p class="muted small-text">Los movimientos no se editan ni se eliminan para que las existencias siempre cuadren con el historial. Solo puedes cambiar la nota. Si te equivocaste, registra un <b>Ajuste</b> con la cantidad correcta.</p>
     </div>`;
     const actions = [{ id: 'cancel', label: 'Cerrar', kind: 'ghost' }];
+    if (m.discrepancy && !m.resolved) actions.push({ id: 'resolve', label: 'Marcar como revisada', kind: 'secondary' });
     if (p) actions.push({ id: 'product', label: 'Ver producto', kind: 'secondary' });
     actions.push({ id: 'save', label: 'Guardar nota', kind: 'primary' });
     UI.modal({
@@ -1029,6 +1063,11 @@
           await Inventory.updateMovementNote(m.id, body.querySelector('#md-note').value);
           UI.toast('Nota guardada.', 'ok');
           await loadMovements(true);
+        } else if (id === 'resolve') {
+          if (!(await UI.confirm({ title: 'Marcar como revisada', message: 'Úsalo cuando ya corregiste la existencia con un Ajuste o confirmaste que no hace falta. Esto no cambia cantidades.', okLabel: 'Marcar revisada' }))) return false;
+          await Inventory.resolveDiscrepancy(m.id, body.querySelector('#md-note').value);
+          UI.toast('Discrepancia marcada como revisada.', 'ok');
+          await refresh();
         } else if (id === 'product') {
           setTimeout(() => openProduct(p.id), 0);
         }
@@ -1159,7 +1198,11 @@
       if (card) openProduct(card.dataset.id);
     });
     list.addEventListener('change', (e) => { if (globalThis.Cart) Cart.handleChange(e); });
-    $('browse-tiles').addEventListener('click', (e) => { const b = e.target.closest('[data-nav]'); if (b) navTo(b.dataset.nav, b.dataset.id); });
+    $('browse-tiles').addEventListener('click', (e) => {
+      const sh = e.target.closest('[data-share]');
+      if (sh) { Lists.openGenerator(sh.dataset.share === 'all' ? { scopeType: 'all' } : { scopeType: 'category', scopeId: sh.dataset.id }); return; }
+      const b = e.target.closest('[data-nav]'); if (b) navTo(b.dataset.nav, b.dataset.id);
+    });
     $('browse-bar').addEventListener('click', (e) => { const b = e.target.closest('[data-nav]'); if (b) navTo(b.dataset.nav, b.dataset.id); });
     list.addEventListener('keydown', (e) => {
       if (e.target.closest('.cart-row')) return;

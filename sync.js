@@ -149,7 +149,7 @@
     const data = obj.data;
     if (!data || !Array.isArray(data.categories) || !Array.isArray(data.products)) errors.push('Faltan los productos o las categorías.');
     if (errors.length) return { ok: false, errors };
-    const pseudo = { app: obj.app, kind: KIND, schemaVersion: Settings.BACKUP_SCHEMA, data: { products: data.products, categories: data.categories, movements: [], photos: Array.isArray(data.photos) ? data.photos : [], settings: [] } };
+    const pseudo = { app: obj.app, kind: KIND, schemaVersion: Settings.BACKUP_SCHEMA, data: { products: data.products, categories: data.categories, movements: Array.isArray(data.movements) ? data.movements : [], photos: Array.isArray(data.photos) ? data.photos : [], settings: [] } };
     const v = Settings.validateBackup(pseudo, { keepPhotoFlags: true, allowUpdate: true });
     return {
       ok: v.ok, errors: v.errors, warnings: v.warnings, clean: v.clean,
@@ -165,12 +165,13 @@
     const incPhotos = new Map(inc.photos.map((ph) => [ph.productId, ph]));
     const incProdIds = new Set(inc.products.map((p) => p.id));
     const incCatIds = new Set(inc.categories.map((c) => c.id));
+    const explained = new Set((inc.movements || []).map((m) => m.productId)); // productos cuyo cambio de cantidad ya viene explicado por movimientos del archivo
     const known = opts.archiveMissing && !(st.knownProductIds || []).length ? new Set(local.products.map((p) => p.id)) : new Set(st.knownProductIds || []);
     const knownCats = new Set(st.knownCategoryIds || []);
     const lastAt = st.lastImport ? st.lastImport.at : null;
     const plan = {
       addCats: [], updCats: [], removeCats: [], addProds: [], updProds: [], qty: [], prices: 0,
-      archive: [], photoSet: [], photoDrop: [], photosMissing: 0, conflicts: 0, unchanged: 0, localOnly: 0, possibleDuplicates: 0,
+      archive: [], photoSet: [], photoDrop: [], photosMissing: 0, newMovements: [], explained, conflicts: 0, unchanged: 0, localOnly: 0, possibleDuplicates: 0,
     };
 
     for (const c of inc.categories) {
@@ -215,7 +216,8 @@
           plan.qty.push(qtyChange);
         }
       }
-      if (opts.prices && nv(l.price) !== nv(p.price)) { ch.price = p.price; plan.prices++; }
+      // Una actualización nunca borra un precio conocido: si el archivo no trae precio, se conserva el local.
+      if (opts.prices && p.price !== null && nv(l.price) !== nv(p.price)) { ch.price = p.price; plan.prices++; }
       let photoChanged = false;
       if (opts.photos) {
         if (p.hasPhoto && ph) {
@@ -229,6 +231,8 @@
         if (lastAt && l.updatedAt > lastAt) plan.conflicts++;
       } else plan.unchanged++;
     }
+    const haveMv = new Set((local.movementIds || []));
+    for (const m of inc.movements || []) if (!haveMv.has(m.id)) plan.newMovements.push(m);
     for (const id of known) {
       const l = lp.get(id);
       if (l && !incProdIds.has(id) && !l.archived) plan.archive.push({ id, name: l.name });
@@ -249,6 +253,7 @@
       const local = {
         products: await R(S.products.getAll()), categories: await R(S.categories.getAll()),
         photos: await R(S.photos.getAll()),
+        movementIds: await R(S.movements.getAllKeys()),
       };
       const st = stateFrom(await R(S.settings.get('syncState')));
       const plan = computePlan(local, inc, opts, st);
@@ -294,20 +299,24 @@
         });
         lp.set(rec.id, rec);
         await R(S.products.put(rec));
-        if (rec.quantity !== null) await R(S.movements.put(movement(rec, null, rec.quantity, true)));
+        if (rec.quantity !== null && !plan.explained.has(rec.id)) await R(S.movements.put(movement(rec, null, rec.quantity, true)));
       }
 
       // 3) Productos existentes
       for (const u of plan.updProds) {
         const rec = Object.assign({}, lp.get(u.id), u.ch, { updatedAt: now });
         if (u.ch.archived !== undefined) rec.archivedAt = u.ch.archived ? now : null;
-        if (u.ch.quantity !== undefined) {
+        if (u.ch.quantity !== undefined && !plan.explained.has(u.id)) {
           const before = lp.get(u.id).quantity === undefined ? null : lp.get(u.id).quantity;
           await R(S.movements.put(movement(rec, before, u.ch.quantity, false)));
         }
         lp.set(rec.id, rec);
         await R(S.products.put(rec));
       }
+
+      // 3b) Movimientos que trae el archivo (retiros, ajustes con fecha…). Se identifican por su id: aplicar dos veces no duplica.
+      for (const m of plan.newMovements) await R(S.movements.put(m));
+      report.movements = plan.newMovements.length;
 
       // 4) Fotos (solo si el archivo las trae y el usuario las aceptó)
       for (const id of plan.photoSet) {
@@ -363,6 +372,7 @@
     line(plan.addProds.length, plan.addProds.length === 1 ? 'producto nuevo' : 'productos nuevos');
     line(plan.updProds.length, plan.updProds.length === 1 ? 'producto con cambios' : 'productos con cambios');
     line(plan.qty.length, plan.qty.length === 1 ? 'cantidad que cambia' : 'cantidades que cambian');
+    line(plan.newMovements.length, plan.newMovements.length === 1 ? 'movimiento del historial (retiro, ajuste…)' : 'movimientos del historial (retiros, ajustes…)');
     line(plan.prices, plan.prices === 1 ? 'precio que cambia' : 'precios que cambian');
     line(plan.archive.length, plan.archive.length === 1 ? 'producto que ya no está en el almacén (se archivará, no se borra)' : 'productos que ya no están en el almacén (se archivarán, no se borran)');
     line(plan.addCats.length + plan.updCats.length, 'categorías o subcategorías nuevas o modificadas');
@@ -398,7 +408,7 @@
     if (st.lastImport && st.lastImport.masterId === meta.masterId && meta.sequence <= st.lastImport.sequence) warn.push(`Esta actualización (n.º ${meta.sequence}) es igual o más antigua que la última que aplicaste (n.º ${st.lastImport.sequence}). Aplicarla no duplica nada, pero podría devolver datos viejos.`);
 
     let result = null;
-    const local = { products: snap.products, categories: snap.categories, photos: snap.photos };
+    const local = { products: snap.products, categories: snap.categories, photos: snap.photos, movementIds: snap.movements.map((m) => m.id) };
     const build = () => computePlan(local, inc, opts, st);
     const html = `<div class="stack">
       <div class="kv">
@@ -441,7 +451,7 @@
           if (plan.photosMissing) extra.push(`${plan.photosMissing} producto${plan.photosMissing === 1 ? '' : 's'} tiene${plan.photosMissing === 1 ? '' : 'n'} foto en el teléfono que creó el archivo, pero esta actualización no la incluye. Pide un archivo con «Todas las fotos» si las quieres.`);
           if (plan.localOnly) extra.push(`${plan.localOnly} producto${plan.localOnly === 1 ? '' : 's'} de este teléfono no vienen del administrador: se conservarán tal cual.`);
           q('#sy-warn2').innerHTML = extra.map((w) => `<div class="notice info">${esc(w)}</div>`).join('');
-          const empty = !(plan.addProds.length || plan.updProds.length || plan.archive.length || plan.addCats.length || plan.updCats.length || plan.removeCats.length);
+          const empty = !(plan.newMovements.length || plan.addProds.length || plan.updProds.length || plan.archive.length || plan.addCats.length || plan.updCats.length || plan.removeCats.length);
           d.foot.querySelector('[data-act=apply]').disabled = empty;
         };
         d.body.addEventListener('change', update);
@@ -474,7 +484,8 @@
       const line = (n, t) => { if (n) rows.push(`<li><b>${n}</b> ${t}</li>`); };
       line(r.added, 'productos nuevos');
       line(r.updated, 'productos actualizados');
-      line(r.qty, 'cantidades actualizadas (quedaron registradas como ajustes en el historial)');
+      line(r.qty, 'cantidades actualizadas (quedaron registradas en el historial)');
+      line(r.movements, 'movimientos añadidos al historial');
       line(r.prices, 'precios actualizados');
       line(r.archived, 'productos archivados (ya no están en el almacén del administrador)');
       line(r.catsAdded + r.catsUpdated, 'categorías o subcategorías nuevas o modificadas');

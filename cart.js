@@ -10,10 +10,12 @@
   const LABEL = {
     salida: { name: 'Salida', cart: 'Carrito de salida', party: 'Cliente (a quién se le lleva)', ph: 'Ej. María Pérez', ok: 'Confirmar salida' },
     entrada: { name: 'Entrada', cart: 'Carrito de entrada', party: 'Proveedor o procedencia (opcional)', ph: 'Ej. Proveedor Habana', ok: 'Confirmar entrada' },
+    baja: { name: 'Baja', cart: 'Carrito de baja (pérdida o retiro)', party: 'Quién retira o reporta (opcional)', ph: 'Ej. Papá', ok: 'Confirmar baja' },
   };
 
-  const blankCart = () => ({ items: {}, prices: {}, party: '', note: '', opId: DB.uuid() });
-  let carts = { salida: blankCart(), entrada: blankCart() };
+  const blankCart = () => ({ items: {}, prices: {}, party: '', note: '', reason: '', date: '', opId: DB.uuid() });
+  const TYPES = ['salida', 'entrada', 'baja'];
+  let carts = { salida: blankCart(), entrada: blankCart(), baja: blankCart() };
   let mode = 'ver'; // ver | salida | entrada
   let saveTimer = null;
 
@@ -24,10 +26,10 @@
   function load() {
     const raw = S().settings.carts;
     if (raw && typeof raw === 'object') {
-      for (const t of ['salida', 'entrada']) {
+      for (const t of TYPES) {
         const c = raw[t];
         if (c && typeof c === 'object') {
-          carts[t] = { items: Object.assign({}, c.items || {}), prices: Object.assign({}, c.prices || {}), party: String(c.party || ''), note: String(c.note || ''), opId: typeof c.opId === 'string' && c.opId ? c.opId : DB.uuid() };
+          carts[t] = { items: Object.assign({}, c.items || {}), prices: Object.assign({}, c.prices || {}), party: String(c.party || ''), note: String(c.note || ''), reason: String(c.reason || ''), date: String(c.date || ''), opId: typeof c.opId === 'string' && c.opId ? c.opId : DB.uuid() };
         }
       }
     }
@@ -36,7 +38,7 @@
 
   /* Quita del carrito productos que ya no existen o fueron archivados. */
   function prune() {
-    for (const t of ['salida', 'entrada']) {
+    for (const t of TYPES) {
       for (const id of Object.keys(carts[t].items)) {
         const p = productOf(id);
         if (!p || p.archived) delete carts[t].items[id];
@@ -75,25 +77,20 @@
   }
 
   function maxFor(t, p) {
-    if (t !== 'salida' || S().settings.allowOversell) return Infinity;
-    return p.quantity > 0 ? p.quantity : 0;
+    return Infinity; // si supera la existencia se avisa y se puede registrar como discrepancia
   }
 
   /* Cambia la cantidad de un producto en el carrito. Devuelve la cantidad final. */
   function setQty(t, id, n) {
     const p = productOf(id);
     if (!p) return 0;
-    if (p.quantity === null || p.quantity === undefined) {
+    if ((p.quantity === null || p.quantity === undefined) && t === 'entrada') {
       UI.toast(`«${p.name}» no tiene existencia registrada. Establécela primero con «Ajustar existencia».`, 'error');
       return qty(t, id);
     }
     n = Inventory.round6(Number(n));
     if (!Number.isFinite(n) || n < 0) n = 0;
     const max = maxFor(t, p);
-    if (n > max) {
-      n = max;
-      UI.toast(max > 0 ? `Solo hay ${fmt(max)} de «${p.name}».` : `«${p.name}» está agotado.`, 'error');
-    }
     if (n <= 0) delete carts[t].items[id]; else carts[t].items[id] = n;
     persist();
     return n;
@@ -104,9 +101,11 @@
     if (mode === 'ver' || p.archived) return '';
     const t = mode;
     const unknown = p.quantity === null || p.quantity === undefined;
-    if (unknown) return `<div class="cart-row" data-pid="${p.id}"><span class="muted small-text">Sin existencia registrada: ajústala primero para poder usarlo en un pedido.</span></div>`;
+    if (unknown && t === 'entrada') return `<div class="cart-row" data-pid="${p.id}"><span class="muted small-text">Sin existencia registrada: ajústala primero para poder registrar una entrada.</span></div>`;
     const q = qty(t, p.id);
+    const over = t !== 'entrada' && q > 0 && (unknown || (!S().settings.allowOversell && q > p.quantity));
     return `<div class="cart-row ${t}" data-pid="${p.id}">
+      ${over ? `<div class="field-error" style="flex:1 0 100%">${unknown ? 'Existencia sin confirmar: se registrará como discrepancia' : `Solo hay ${esc(fmt(p.quantity))}: se registrará como discrepancia`}</div>` : ''}
       <div class="cart-step"><button type="button" class="btn secondary small" data-c="add" data-n="-1" aria-label="Quitar uno">−</button>
         <input class="cq" inputmode="decimal" value="${q ? esc(fmt(q)) : ''}" placeholder="0" aria-label="Cantidad de ${esc(p.name)}">
         <button type="button" class="btn secondary small" data-c="add" data-n="1" aria-label="Añadir uno">+</button></div>
@@ -172,7 +171,7 @@
   function renderModeSeg() {
     const el = document.getElementById('mode-seg');
     if (!el) return;
-    el.innerHTML = [['ver', 'Consultar', 0], ['salida', 'Salida', count('salida')], ['entrada', 'Entrada', count('entrada')]]
+    el.innerHTML = [['ver', 'Consultar', 0], ['salida', 'Salida', count('salida')], ['entrada', 'Entrada', count('entrada')], ['baja', 'Baja', count('baja')]]
       .map(([v, l, n]) => `<button type="button" data-mode="${v}" aria-pressed="${mode === v}">${l}${n ? ` <span class="badge-n">${n}</span>` : ''}</button>`).join('');
   }
 
@@ -216,7 +215,7 @@
 
   async function open(t) {
     t = t || mode;
-    if (t !== 'salida' && t !== 'entrada') return;
+    if (!LABEL[t] || t === 'ver') return;
     const L = LABEL[t];
     const parties = await knownParties();
     const c = () => carts[t];
@@ -224,9 +223,10 @@
       const items = Object.entries(c().items).map(([id, n]) => ({ p: productOf(id), n })).filter((x) => x.p);
       items.sort((a, b) => Inventory.collator.compare(a.p.name, b.p.name));
       return items.length ? items.map(({ p, n }) => {
-        const over = t === 'salida' && !S().settings.allowOversell && n > p.quantity;
+        const unk = p.quantity === null || p.quantity === undefined;
+        const over = t !== 'entrada' && (unk || (!S().settings.allowOversell && n > p.quantity));
         return `<div class="ci" data-pid="${p.id}">
-          <div class="ci-main"><b>${esc(p.name)}</b><div class="muted small-text">${esc([p.color, p.presentation].filter(Boolean).join(' · '))}${p.quantity !== null ? ` · Hay ${esc(Inventory.qtyText(p.quantity, p.unit))}` : ''}</div>${over ? '<div class="field-error">Supera la existencia</div>' : ''}</div>
+          <div class="ci-main"><b>${esc(p.name)}</b><div class="muted small-text">${esc([p.color, p.presentation].filter(Boolean).join(' · '))}${p.quantity !== null ? ` · Hay ${esc(Inventory.qtyText(p.quantity, p.unit))}` : ''}</div>${over ? `<div class="field-error">${unk ? 'Existencia sin confirmar' : 'Supera la existencia'}: se registrará como discrepancia</div>` : ''}</div>
           <div class="cart-step"><button type="button" class="btn secondary small" data-ci="dec" aria-label="Quitar uno">−</button>
             <input class="cq" inputmode="decimal" value="${esc(fmt(n))}" aria-label="Cantidad">
             <button type="button" class="btn secondary small" data-ci="inc" aria-label="Añadir uno">+</button>
@@ -238,6 +238,9 @@
     const html = `<div class="stack">
       <div id="ci-list">${body()}</div>
       <div id="ci-total" class="muted small-text"></div>
+      ${t === 'baja' ? `<label class="field"><span>Motivo *</span><select id="ci-reason"><option value="">Elige el motivo…</option>${reasonList().map((x) => `<option value="${esc(x)}" ${c().reason === x ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></label>
+      <label class="field"><span>Fecha del movimiento</span><input id="ci-date" type="date" max="${todayStr()}" value="${esc(c().date || todayStr())}"></label>
+      <p class="muted small-text">Una baja descuenta existencias pero <b>no es una venta</b> ni genera ingresos. Para corregir tras contar usa «Ajustar existencia».</p>` : ''}
       <label class="field"><span>${esc(L.party)}</span><input id="ci-party" maxlength="80" list="dl-parties" autocomplete="off" placeholder="${esc(L.ph)}" value="${esc(c().party)}"></label>
       <datalist id="dl-parties">${parties.map((x) => `<option value="${esc(x)}">`).join('')}</datalist>
       <label class="field"><span>Nota (opcional)</span><input id="ci-note" maxlength="300" autocomplete="off" value="${esc(c().note)}"></label>
@@ -268,6 +271,8 @@
           redraw();
         });
         d.body.addEventListener('change', (e) => {
+          if (e.target.id === 'ci-reason') { c().reason = e.target.value; persist(); return; }
+          if (e.target.id === 'ci-date') { c().date = e.target.value; persist(); return; }
           const pin = e.target.closest('.cp');
           if (pin) {
             const id = pin.closest('.ci').dataset.pid;
@@ -281,6 +286,7 @@
         d.body.addEventListener('input', (e) => {
           if (e.target.id === 'ci-party') { c().party = e.target.value; persist(); }
           if (e.target.id === 'ci-note') { c().note = e.target.value; persist(); }
+          if (e.target.id === 'ci-date') { c().date = e.target.value; persist(); }
         });
       },
       async onAction(id, bodyEl) {
@@ -298,11 +304,23 @@
             return false;
           }
         }
+        if (t === 'baja' && !c().reason) { err.textContent = 'Elige el motivo de la baja.'; bodyEl.querySelector('#ci-reason').focus(); return false; }
         try {
           const items = Object.entries(c().items).map(([productId, amount]) => ({ productId, amount, price: effPrice(t, productOf(productId)) }));
           const snapshot = items.map((it) => ({ p: productOf(it.productId), n: it.amount, price: it.price }));
-          const out = await Inventory.registerBatch({ type: t, items, party: c().party, note: c().note, opId: c().opId });
-          confirmed = { t, party: c().party.trim(), note: c().note.trim(), snapshot, out, currency: S().settings.currency };
+          const call = (allow) => Inventory.registerBatch({ type: t, items, party: c().party, note: c().note, opId: c().opId, reason: c().reason, occurredAt: t === 'baja' ? dayMs(c().date) : null, allowDiscrepancy: allow });
+          let out;
+          try { out = await call(false); } catch (e) {
+            if (!(e && e.code === 'DISCREPANCY' || (e && e.extra && e.extra.discrepancy))) throw e;
+            const ok = await UI.confirm({
+              title: 'Discrepancia de inventario',
+              html: `<p>No se puede descontar con seguridad:</p><ul>${(e.extra.problems || []).map((x) => `<li>${esc(x)}</li>`).join('')}</ul><p>Puedes registrar el movimiento como <b>discrepancia para revisión</b>: queda en el historial, pero <b>no cambia la existencia</b> de esos productos (no se inventa ninguna cantidad). Los demás productos sí se descuentan.</p>`,
+              okLabel: 'Registrar discrepancia', cancelLabel: 'Volver',
+            });
+            if (!ok) return false;
+            out = await call(true);
+          }
+          confirmed = { t, party: c().party.trim(), note: c().note.trim(), snapshot, out, currency: S().settings.currency, discrepancies: out.discrepancies || 0, reason: c().reason };
           carts[t] = blankCart(); persist();
         } catch (e) {
           err.textContent = DB.friendlyError(e);
@@ -314,6 +332,10 @@
     refreshUI();
     if (confirmed) await showDone(confirmed);
   }
+
+  function reasonList() { return [...Inventory.BAJA_REASONS, ...((S().settings.customReasons) || [])]; }
+  const todayStr = () => { const d = new Date(); const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`; };
+  const dayMs = (v) => { if (!v) return null; const [y, m, d] = v.split('-').map(Number); const ts = new Date(y, m - 1, d, 12, 0, 0).getTime(); return Number.isFinite(ts) ? ts : null; };
 
   const hasPrices = (r) => r.t === 'salida' && r.snapshot.some((x) => x.price !== null && x.price !== undefined);
   const lineTotal = (x) => (x.price === null || x.price === undefined ? null : Inventory.round2(x.n * x.price));
@@ -417,7 +439,17 @@
     return 'downloaded';
   }
 
+  async function showBajaDone(r) {
+    const totalU = r.snapshot.reduce((a, x) => a + x.n, 0);
+    return UI.alert({
+      title: 'Baja registrada',
+      html: `<div class="stack"><div class="issue ok"><b>Listo.</b> ${esc(r.reason)} · ${r.snapshot.length} producto${r.snapshot.length === 1 ? '' : 's'}, ${fmt(totalU)} unidades${r.party ? ` · ${esc(r.party)}` : ''}. No se contabiliza como venta.</div>
+        ${r.discrepancies ? `<div class="notice">${r.discrepancies} producto${r.discrepancies === 1 ? '' : 's'} quedó como <b>discrepancia pendiente de revisión</b> (no cambió su existencia). Revísalo en Movimientos › Discrepancias.</div>` : ''}</div>`,
+    });
+  }
+
   async function showDone(r) {
+    if (r.t === 'baja') return showBajaDone(r);
     const totalU = r.snapshot.reduce((a, x) => a + x.n, 0);
     const wp = hasPrices(r);
     const html = `<div class="stack"><div class="issue ok"><b>Listo.</b> ${r.snapshot.length} producto${r.snapshot.length === 1 ? '' : 's'}, ${fmt(totalU)} unidades${r.party ? ` · ${esc(r.party)}` : ''}${wp ? `<br>Total: <b>${esc(money(grand(r)))}</b>` : ''}. Las existencias ya se actualizaron y el pedido quedó en Movimientos.</div>
@@ -454,7 +486,7 @@
   }
 
   function reload() {
-    carts = { salida: blankCart(), entrada: blankCart() };
+    carts = { salida: blankCart(), entrada: blankCart(), baja: blankCart() };
     load();
     refreshUI();
   }
@@ -470,5 +502,5 @@
     renderBar();
   }
 
-  globalThis.Cart = { init, reload, textImage, shareBlob, controlsHtml, handleClick, handleChange, setMode, refreshUI, open, get mode() { return mode; }, qty, count, total };
+  globalThis.Cart = { init, reload, addToCart(t, id, n) { setQty(t, id, n); }, textImage, shareBlob, controlsHtml, handleClick, handleChange, setMode, refreshUI, open, get mode() { return mode; }, qty, count, total };
 })();
