@@ -56,6 +56,11 @@ Al subir cambios, edita `VERSION` en `service-worker.js`. En el teléfono: Confi
 ## Cambiar precios por grupo o eligiendo productos (v1.4.2)
 Configuración › «Precios por grupo»: agrupa los productos de la misma marca, presentación y tamaño (el color, el código y el volumen no cuentan; p. ej. todos los Stereo de 50 ml, o los peróxidos Oggy de 1 L en 30 y 40 vol). Escribes el precio y «Aplicar a todos». Si el grupo tenía precios distintos, pide confirmación. Cada grupo tiene «Elegir…» para marcar solo algunos productos (p. ej. dejar fuera los rojos), y el modo «Elegir productos» permite marcar productos sueltos de cualquier marca y ponerles un precio a la vez.
 
+## Pedidos apartados y totales por categoría (v1.5.0)
+- Modo **Apartar**: armas un pedido con el cliente y lo guardas. Sus productos **salen del almacén ya** (quedan reservados) pero el pedido **no se factura todavía**. En **Pedidos** puedes editarlo (sumar o restar: la diferencia se descuenta o se devuelve sola), **Facturar** (genera el recibo) o **Cancelar pedido** (todo vuelve al almacén). Si no hay existencia suficiente, no deja apartar. Los pedidos viajan en la copia de seguridad.
+- Cambiar el **precio general** de una subcategoría/categoría ahora puede aplicarse a todos sus productos (casilla «Aplicarlo a todos los productos»).
+- El recibo (imagen, texto y .txt) incluye **TOTAL POR CATEGORÍA** y, debajo, por subcategoría (p. ej. «Tintes capilares: 40 tubos» › «Stereo: 17 tubos»).
+
 ## Notas
 - Cantidad vacía = «sin registrar» (no es 0). Las cantidades aproximadas se marcan con ≈ y no se mezclan con las confirmadas.
 - No genera APK. Es una PWA instalable desde Chrome.

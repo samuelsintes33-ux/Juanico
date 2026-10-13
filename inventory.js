@@ -184,6 +184,8 @@
       reason: f.reason || '',
       discrepancy: !!f.discrepancy,
       resolved: !!f.resolved,
+      held: !!f.held,
+      heldId: f.heldId || null,
       occurredAt: typeof f.occurredAt === 'number' ? f.occurredAt : null,
       createdAt: f.createdAt,
     };
@@ -642,6 +644,125 @@
     return products.find((p) => p.id !== excludeId && !p.archived && norm(p.name) === n && norm(p.brand) === b && norm(p.code) === c) || null;
   }
 
+  /* ---------------- Pedidos apartados ----------------
+     Un pedido apartado descuenta las existencias YA (los productos salen del almacén y quedan reservados
+     para ese cliente), pero todavía no se factura. Se puede seguir editando (sumar o restar) y al final se
+     factura o se cancela (los productos vuelven al almacén). Todo en una sola transacción. */
+  async function saveHeldOrder(input) {
+    const id = input.id || DB.uuid();
+    const opId = input.opId || DB.uuid();
+    const wanted = new Map();
+    for (const [pid, raw] of Object.entries(input.items || {})) {
+      const p = parseDecimal(raw);
+      if (p.empty || p.invalid || p.value < 0 || p.value > 1e9) throw new AppError('VALIDATION', 'Hay un producto con una cantidad no válida. Revisa el pedido.');
+      if (p.value > 0) wanted.set(pid, round6(p.value));
+    }
+    if (!wanted.size) throw new AppError('VALIDATION', 'El pedido está vacío. Si quieres anularlo, usa «Cancelar pedido».');
+    const prices = {};
+    for (const [pid, v] of Object.entries(input.prices || {})) { const n = Number(v); if (wanted.has(pid) && Number.isFinite(n) && n >= 0 && n <= 1e9) prices[pid] = round2(n); }
+    const party = String(input.party || '').trim().slice(0, 80);
+    const note = String(input.note || '').trim().slice(0, LIMITS.note);
+    return DB.tx(['products', 'categories', 'movements', 'settings'], 'readwrite', async (S) => {
+      const row = await R(S.settings.get('heldOrders'));
+      const list = Array.isArray(row && row.value) ? row.value.slice() : [];
+      let order = list.find((o) => o.id === id);
+      if (order && order.status !== 'apartado') throw new AppError('HELD_CLOSED', 'Este pedido ya fue facturado o cancelado y no se puede editar.');
+      if (await R(S.movements.get(`${opId}:0`))) return { duplicate: true, order, changed: 0 };
+      const cur = new Map();
+      for (const m of await R(S.movements.getAll())) {
+        if (m.held && m.heldId === id) cur.set(m.productId, round6((cur.get(m.productId) || 0) + (m.type === 'salida' ? m.quantity : -m.quantity)));
+      }
+      const orow = await R(S.settings.get('allowOversell'));
+      const oversell = !!(orow && orow.value === true);
+      const work = []; const problems = [];
+      for (const pid of new Set([...cur.keys(), ...wanted.keys()])) {
+        const delta = round6((wanted.get(pid) || 0) - (cur.get(pid) || 0));
+        if (!delta) continue;
+        const product = await R(S.products.get(pid));
+        if (!product) throw new AppError('NOT_FOUND', 'Un producto del pedido ya no existe.');
+        const before = product.quantity === undefined ? null : product.quantity;
+        if (delta > 0) {
+          if (product.archived) throw new AppError('ARCHIVED', `«${product.name}» está archivado. Quítalo del pedido.`);
+          if (before === null) { problems.push(`«${product.name}»: la existencia no está confirmada`); continue; }
+          if (round6(before - delta) < 0 && !oversell) { problems.push(`«${product.name}»: solo hay ${fmtNum(before)} y el pedido necesita ${fmtNum(delta)} más`); continue; }
+        } else if (before === null) throw new AppError('UNKNOWN_QTY', `«${product.name}» no tiene existencia registrada; no se puede devolver al almacén.`);
+        work.push({ product, delta, before });
+      }
+      if (problems.length) throw new AppError('INSUFFICIENT', `No se puede apartar:\n${problems.join('\n')}`, { problems });
+      let i = 0;
+      for (const w of work) {
+        const type = w.delta > 0 ? 'salida' : 'entrada';
+        const qty = Math.abs(w.delta);
+        const after = round6(type === 'salida' ? w.before - qty : w.before + qty);
+        const mv = await buildMovement(S, w.product, {
+          id: `${opId}:${i++}`, type, quantity: qty, before: w.before, after, party,
+          note: type === 'salida' ? 'Pedido apartado (aún sin facturar)' : 'Pedido apartado: se devolvió al almacén',
+          estimated: w.product.quantityStatus === 'estimated', orderId: id, held: true, heldId: id, createdAt: nextTs(),
+        });
+        await R(S.movements.put(mv));
+        w.product.quantity = after; w.product.updatedAt = Date.now();
+        await R(S.products.put(w.product));
+      }
+      const now = Date.now();
+      if (!order) { order = { id, num: list.reduce((a, o) => Math.max(a, o.num || 0), 0) + 1, createdAt: now }; list.push(order); }
+      Object.assign(order, { party, note, items: Object.fromEntries(wanted), prices, status: 'apartado', updatedAt: now });
+      await R(S.settings.put({ key: 'heldOrders', value: list }));
+      return { order, changed: work.length };
+    });
+  }
+
+  /* Factura el pedido apartado: los movimientos dejan de estar «apartados» y pasan a ser una salida normal con su precio. */
+  function invoiceHeldOrder(id, finalPrices) {
+    return DB.tx(['movements', 'settings'], 'readwrite', async (S) => {
+      const row = await R(S.settings.get('heldOrders'));
+      const list = Array.isArray(row && row.value) ? row.value.slice() : [];
+      const order = list.find((o) => o.id === id);
+      if (!order) throw new AppError('NOT_FOUND', 'El pedido ya no existe.');
+      if (order.status !== 'apartado') throw new AppError('HELD_CLOSED', 'Este pedido ya fue facturado o cancelado.');
+      const fp = {};
+      for (const [pid, v] of Object.entries(finalPrices || {})) { const n = Number(v); if (Number.isFinite(n) && n >= 0 && n <= 1e9) fp[pid] = round2(n); }
+      for (const m of await R(S.movements.getAll())) {
+        if (m.heldId !== id || !m.held) continue;
+        m.held = false;
+        if (m.type === 'salida' && fp[m.productId] !== undefined) m.price = fp[m.productId];
+        m.note = m.type === 'salida' ? 'Pedido facturado' : m.note;
+        await R(S.movements.put(m));
+      }
+      Object.assign(order, { status: 'facturado', invoicedAt: Date.now(), prices: fp, updatedAt: Date.now() });
+      await R(S.settings.put({ key: 'heldOrders', value: list }));
+      return order;
+    });
+  }
+
+  /* Cancela el pedido apartado: todo lo apartado vuelve al almacén (queda en el historial). */
+  function cancelHeldOrder(id) {
+    return DB.tx(['products', 'categories', 'movements', 'settings'], 'readwrite', async (S) => {
+      const row = await R(S.settings.get('heldOrders'));
+      const list = Array.isArray(row && row.value) ? row.value.slice() : [];
+      const order = list.find((o) => o.id === id);
+      if (!order) throw new AppError('NOT_FOUND', 'El pedido ya no existe.');
+      if (order.status !== 'apartado') throw new AppError('HELD_CLOSED', 'Este pedido ya fue facturado o cancelado.');
+      const all = (await R(S.movements.getAll())).filter((m) => m.heldId === id && m.held);
+      const cur = new Map();
+      for (const m of all) cur.set(m.productId, round6((cur.get(m.productId) || 0) + (m.type === 'salida' ? m.quantity : -m.quantity)));
+      const opId = DB.uuid(); let i = 0;
+      for (const [pid, qty] of cur) {
+        if (qty <= 0) continue;
+        const product = await R(S.products.get(pid));
+        if (!product) continue;
+        const before = product.quantity === undefined || product.quantity === null ? 0 : product.quantity;
+        const after = round6(before + qty);
+        await R(S.movements.put(await buildMovement(S, product, { id: `${opId}:${i++}`, type: 'entrada', quantity: qty, before, after, party: order.party || '', note: 'Pedido apartado cancelado: vuelve al almacén', estimated: product.quantityStatus === 'estimated', orderId: id, held: false, heldId: id, createdAt: nextTs() })));
+        product.quantity = after; product.updatedAt = Date.now();
+        await R(S.products.put(product));
+      }
+      for (const m of all) { m.held = false; await R(S.movements.put(m)); }
+      Object.assign(order, { status: 'cancelado', cancelledAt: Date.now(), updatedAt: Date.now() });
+      await R(S.settings.put({ key: 'heldOrders', value: list }));
+      return order;
+    });
+  }
+
   /* Pone el mismo precio a varios productos a la vez (una sola transacción). raw vacío = quitar precio. */
   function setPrices(ids, raw) {
     const pr = parseDecimal(raw);
@@ -667,6 +788,7 @@
   }
 
   globalThis.Inventory = {
+    saveHeldOrder, invoiceHeldOrder, cancelHeldOrder,
     setPrices,
     MOVEMENT_TYPES, BAJA_REASONS, LIMITS,
     norm, fmtNum, fmtSigned, unitText, qtyText, parseDecimal, round2, round6, nextTs, collator,

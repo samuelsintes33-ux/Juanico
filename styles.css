@@ -459,3 +459,7 @@ body.cart-on .fab { display: none; }
 
 .share-row { grid-column: 1 / -1; display: flex; }
 .share-row .btn { width: 100%; }
+
+.mode-seg { flex-wrap: wrap; }
+.mode-seg button { flex: 1 1 30%; }
+.cart-bar.apartar { border-top-color: #7c3aed; }

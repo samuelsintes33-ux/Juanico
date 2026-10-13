@@ -986,7 +986,7 @@
         const whenTs = m.occurredAt || m.createdAt;
         const range = `${m.before === null ? 'Sin registrar' : fmtNum(m.before)} → ${fmtNum(m.after)}${m.estimated ? ' (aprox.)' : ''}`;
         return `<button type="button" class="card mv" data-mid="${m.id}">
-          <div class="mv-top"><div><span class="badge ${TYPE_CLASS[m.type]}">${TYPE_LABEL[m.type]}${m.initial ? ' inicial' : ''}${m.reason ? ` · ${esc(m.reason)}` : ''}</span>${m.discrepancy ? ` <span class="badge arch">${m.resolved ? 'Discrepancia revisada' : 'Discrepancia pendiente'}</span>` : ''}
+          <div class="mv-top"><div><span class="badge ${TYPE_CLASS[m.type]}">${TYPE_LABEL[m.type]}${m.initial ? ' inicial' : ''}${m.reason ? ` · ${esc(m.reason)}` : ''}</span>${m.held ? ' <span class="badge arch">Apartado (sin facturar)</span>' : ''}${m.discrepancy ? ` <span class="badge arch">${m.resolved ? 'Discrepancia revisada' : 'Discrepancia pendiente'}</span>` : ''}
             <div class="mv-name">${esc(m.productName)}</div></div><div class="mv-qty ${TYPE_CLASS[m.type]}">${esc(mvQtyText(m))}</div></div>
           ${meta ? `<div class="mv-meta">${esc(meta)}</div>` : ''}
           <div class="mv-meta"><span>${esc(range)}</span><span>${esc(m.occurredAt ? new Date(m.occurredAt).toLocaleDateString('es', { dateStyle: 'medium' }) : UI.fmtDateTime(m.createdAt))}</span></div>

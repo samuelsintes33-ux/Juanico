@@ -85,20 +85,36 @@
     });
   }
 
-  /* price vacío/null quita el precio general. No toca los precios individuales. */
-  function setGeneralPrice(id, rawPrice) {
+  /* price vacío/null quita el precio general.
+     opts.applyToProducts: además pone ese mismo precio a TODOS los productos de la categoría/subcategoría
+     (sustituye el precio propio que tuvieran). Todo en una sola transacción. Devuelve { cat, changed }. */
+  function setGeneralPrice(id, rawPrice, opts) {
     const p = Inventory.parseDecimal(rawPrice);
     if (p.invalid) fail('Escribe un precio válido (por ejemplo 500 o 12,50).', 'price');
     if (!p.empty && p.value < 0) fail('El precio no puede ser negativo.', 'price');
     if (!p.empty && p.value > 1e9) fail('El precio es demasiado grande.', 'price');
     const value = p.empty ? null : Inventory.round2(p.value);
-    return DB.tx(['categories'], 'readwrite', async (S) => {
+    const apply = !!(opts && opts.applyToProducts) && value !== null;
+    return DB.tx(['categories', 'products'], 'readwrite', async (S) => {
       const cat = await R(S.categories.get(id));
       if (!cat) throw new AppError('NOT_FOUND', 'La categoría ya no existe.');
+      const now = Date.now();
       cat.generalPrice = value;
-      cat.updatedAt = Date.now();
+      cat.updatedAt = now;
       await R(S.categories.put(cat));
-      return cat;
+      let changed = 0;
+      if (apply) {
+        const all = await R(S.products.getAll());
+        for (const pr of all) {
+          if (pr.archived) continue;
+          const inScope = cat.parentId ? pr.subcategoryId === cat.id : pr.categoryId === cat.id;
+          if (!inScope || pr.price === value) continue;
+          pr.price = value; pr.updatedAt = now;
+          await R(S.products.put(pr));
+          changed++;
+        }
+      }
+      return Object.assign(cat, { _changed: changed });
     });
   }
 
@@ -269,11 +285,15 @@
 
   function priceDialog(cat) {
     const cur = App.state.settings.currency;
+    const scoped = App.state.products.filter((x) => !x.archived && (cat.parentId ? x.subcategoryId === cat.id : x.categoryId === cat.id));
+    const nProd = scoped.length;
+    const nOwn = scoped.filter((x) => x.price !== null && x.price !== undefined).length;
     const html = `
       <div class="stack">
-        <p class="muted">Precio predeterminado para los productos de «${esc(cat.name)}» que no tengan precio propio. No cambia los precios individuales.</p>
+        <p class="muted">Precio para los productos de «${esc(cat.name)}».</p>
         <label class="field"><span>Precio general (${esc(cur)})</span>
           <input id="gp-input" inputmode="decimal" autocomplete="off" value="${cat.generalPrice === null || cat.generalPrice === undefined ? '' : esc(Inventory.fmtNum(cat.generalPrice))}" placeholder="Sin precio general"></label>
+        <label class="switch"><span class="sw-text">Aplicarlo a todos los productos de «${esc(cat.name)}» (${nProd})<small>${nOwn ? `${nOwn} tienen un precio propio distinto: se sustituirá. ` : ''}Si lo desactivas, solo vale para los productos que no tengan precio propio.</small></span><input type="checkbox" id="gp-apply" ${cat.parentId ? 'checked' : ''}></label>
         <div class="field-error" id="gp-err" role="alert"></div>
       </div>`;
     const actions = [{ id: 'cancel', label: 'Cancelar', kind: 'ghost' }];
@@ -287,7 +307,10 @@
           if (id === 'clear') await setGeneralPrice(cat.id, null);
           else {
             const v = body.querySelector('#gp-input').value;
-            await setGeneralPrice(cat.id, v);
+            const ap = body.querySelector('#gp-apply').checked;
+            const r = await setGeneralPrice(cat.id, v, { applyToProducts: ap });
+            await App.refresh();
+            if (ap && r._changed) UI.toast(`Precio actualizado en ${r._changed} producto${r._changed === 1 ? '' : 's'}.`, 'ok');
           }
         } catch (e) {
           err.textContent = DB.friendlyError(e);

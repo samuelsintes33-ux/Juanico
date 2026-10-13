@@ -6,7 +6,7 @@
   const esc = (s) => UI.esc(s);
 
   const APP_ID = 'almacen-inventario';
-  const APP_VERSION = '1.4.2';
+  const APP_VERSION = '1.5.0';
   const BACKUP_SCHEMA = 2; // versión del formato de copia (coincide con la versión de la base de datos)
   const LOCAL_ONLY_KEYS = ['lastBackupAt', 'syncState', 'carts']; // propios de cada teléfono: nunca viajan en copias
 
@@ -22,6 +22,7 @@
     lastBackupAt: null,
     quickSteps: [1, 5, 10, 12, 50], // botones rápidos del carrito (se editan en Configuración)
     customReasons: [],          // otros motivos de baja (se añaden en Configuración)
+    heldOrders: [],             // pedidos apartados (viajan en la copia de seguridad: sus productos ya salieron del almacén)
     carts: null,                // carritos de entrada/salida sin confirmar (de este teléfono)
     syncState: null,            // datos de sincronización de ESTE teléfono (no se copia ni se comparte)
   };
@@ -221,7 +222,7 @@
         id: m.id, productId: m.productId, productName: String(m.productName || '').slice(0, 120), brand: String(m.brand || ''), code: String(m.code || ''),
         categoryName: String(m.categoryName || ''), subcategoryName: String(m.subcategoryName || ''), type: m.type,
         quantity: isNum(m.quantity) ? m.quantity : null, before: isNum(m.before) ? m.before : null, after: isNum(m.after) ? m.after : null,
-        unit: String(m.unit || ''), note: String(m.note || '').slice(0, 300), initial: !!m.initial, estimated: !!m.estimated, orderId: isStr(m.orderId) ? m.orderId : null, reason: String(m.reason || '').slice(0, 60), discrepancy: !!m.discrepancy, resolved: !!m.resolved, occurredAt: isNum(m.occurredAt) ? m.occurredAt : null, price: isNum(m.price) && m.price >= 0 ? m.price : null, party: String(m.party || '').slice(0, 80), createdAt: m.createdAt,
+        unit: String(m.unit || ''), note: String(m.note || '').slice(0, 300), initial: !!m.initial, estimated: !!m.estimated, orderId: isStr(m.orderId) ? m.orderId : null, reason: String(m.reason || '').slice(0, 60), discrepancy: !!m.discrepancy, resolved: !!m.resolved, held: !!m.held, heldId: isStr(m.heldId) ? m.heldId : null, occurredAt: isNum(m.occurredAt) ? m.occurredAt : null, price: isNum(m.price) && m.price >= 0 ? m.price : null, party: String(m.party || '').slice(0, 80), createdAt: m.createdAt,
       });
     }
 
