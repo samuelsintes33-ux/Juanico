@@ -141,7 +141,7 @@
 
   /* Ejecuta `work(stores, tx)` dentro de UNA transacción. Si `work` lanza un error o la
      transacción falla, se cancela todo: no queda ningún cambio a medias. */
-  async function tx(names, mode, work) {
+  async function tx(names, mode, work, opts) {
     const db = await open();
     return new Promise((resolve, reject) => {
       let t;
@@ -153,7 +153,11 @@
       }
       let result;
       let failure = null;
-      t.oncomplete = () => resolve(result);
+      t.oncomplete = () => {
+        resolve(result);
+        // Aviso a la sincronización por internet de que hubo un cambio local.
+        if (mode === 'readwrite' && !(opts && opts.quiet) && globalThis.Cloud) { try { globalThis.Cloud.touch(); } catch (_) { /* nunca debe afectar al guardado */ } }
+      };
       t.onabort = () => reject(failure || t.error || new AppError('ABORT', 'La operación se canceló.'));
       const stores = {};
       names.forEach((n) => { stores[n] = t.objectStore(n); });

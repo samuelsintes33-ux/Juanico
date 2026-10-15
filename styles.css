@@ -463,3 +463,12 @@ body.cart-on .fab { display: none; }
 .mode-seg { flex-wrap: wrap; }
 .mode-seg button { flex: 1 1 30%; }
 .cart-bar.apartar { border-top-color: #7c3aed; }
+
+/* Indicador de sincronización por internet (cabecera) */
+.cloud-badge { position: relative; border: 0; background: transparent; color: var(--muted, #64748b); font-size: 1.25rem; line-height: 1; padding: 6px 8px; border-radius: 10px; min-width: 40px; min-height: 40px; cursor: pointer; }
+.cloud-badge.ok { color: #16a34a; }
+.cloud-badge.busy { color: var(--primary); animation: cloud-spin 1.2s linear infinite; }
+.cloud-badge.err { color: #dc2626; font-weight: 800; }
+.cloud-badge small { position: absolute; right: 0; top: 0; background: #f59e0b; color: #1c1917; border-radius: 999px; font-size: .62rem; padding: 0 5px; font-weight: 700; animation: none; }
+@keyframes cloud-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .cloud-badge.busy { animation: none; } }

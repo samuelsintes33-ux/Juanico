@@ -1264,6 +1264,7 @@
       Gallery.init();
       Settings.init();
       Cart.init();
+      if (globalThis.Cloud) Cloud.init();
       renderFilters();
       renderProducts();
       Gallery.renderSection();

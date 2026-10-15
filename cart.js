@@ -449,27 +449,42 @@
     }));
   }
 
-  /* Texto corto: cada producto en 2 líneas cortas, para que no se corte en el chat. */
+  /* Opciones del recibo (se recuerdan): compacto/completo, precios, totales por categoría y por subcategoría, total de unidades, fecha. */
+  const RDEF = { compact: false, prices: true, cats: true, subs: true, units: true, date: true, color: true };
+  const rprefs = () => Object.assign({}, RDEF, S().settings.receiptPrefs && typeof S().settings.receiptPrefs === 'object' ? S().settings.receiptPrefs : {});
+  const ropts = (r, o) => { const x = Object.assign({}, rprefs(), o && typeof o === 'object' ? o : (typeof o === 'boolean' ? { prices: o } : {})); x.prices = x.prices !== false && hasPrices(r); x.subs = x.subs && x.cats; return x; };
+  const itemName = (p, o) => (o.color ? nameOf(p) : p.name);
+
+  /* Texto: completo = cada producto en 2 líneas cortas; compacto = una línea por producto. */
   function summaryText(r, withPrices) {
-    const wp = withPrices !== false && hasPrices(r);
-    const lines = [`${r.t === 'salida' ? 'PEDIDO' : 'ENTRADA'}${r.party ? ` — ${r.party}` : ''}`, dateText(), ''];
+    const o = ropts(r, withPrices);
+    const head = `${r.t === 'salida' ? 'PEDIDO' : 'ENTRADA'}${r.party ? ` — ${r.party}` : ''}`;
+    const lines = o.compact ? [o.date ? `${head} · ${dateText()}` : head] : [head, ...(o.date ? [dateText()] : []), ''];
     for (const x of r.snapshot) {
-      lines.push(nameOf(x.p));
       const lt = lineTotal(x);
-      lines.push(wp && lt !== null ? `   ${fmt(x.n)} × ${fmt(x.price)} = ${fmt(lt)} ${r.currency}` : `   ${fmt(x.n)} ${Inventory.unitText(x.p.unit, x.n).replace(/^\S+\s/, '')}`);
+      const un = Inventory.unitText(x.p.unit, x.n);
+      if (o.compact) lines.push(o.prices && lt !== null ? `${fmt(x.n)} × ${itemName(x.p, o)} = ${fmt(lt)}` : `${fmt(x.n)} × ${itemName(x.p, o)}`);
+      else {
+        lines.push(itemName(x.p, o));
+        lines.push(o.prices && lt !== null ? `   ${fmt(x.n)} × ${fmt(x.price)} = ${fmt(lt)} ${r.currency}` : `   ${fmt(x.n)} ${un}`);
+      }
     }
-    const gt = groupTotals(r);
-    lines.push('', 'TOTAL POR CATEGORÍA');
-    for (const g of gt) { lines.push(`${g.name}: ${g.text}`); for (const sg of g.subs) lines.push(`   ${sg.name}: ${sg.text}`); }
-    lines.push('', `Total: ${fmt(r.snapshot.reduce((a, x) => a + x.n, 0))} unidades`);
-    if (wp) lines.push(`TOTAL A PAGAR: ${fmt(grand(r))} ${r.currency}`);
+    if (o.cats) {
+      lines.push('', o.compact ? 'Por categoría:' : 'TOTAL POR CATEGORÍA');
+      for (const g of groupTotals(r)) {
+        lines.push(`${g.name}: ${g.text}`);
+        if (o.subs) for (const sg of g.subs) lines.push(`   ${sg.name}: ${sg.text}`);
+      }
+    }
+    if (o.units) lines.push(...(o.compact && !o.cats ? [] : ['']), `Total: ${fmt(r.snapshot.reduce((a, x) => a + x.n, 0))} unidades`);
+    if (o.prices) lines.push(`TOTAL A PAGAR: ${fmt(grand(r))} ${r.currency}`);
     if (r.note) lines.push('', r.note);
     return lines.join('\n');
   }
 
   /* Dibuja en una imagen (PNG) con letra grande y ancho fijo: en WhatsApp se ve completa, sin cortes. */
-  function canvasFor(draw, measureOnly) {
-    const W = 760; const PAD = 36;
+  function canvasFor(draw, W) {
+    W = W || 760; const PAD = Math.round(W * 0.047);
     const cv = document.createElement('canvas');
     const ctx = cv.getContext('2d');
     const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
@@ -492,42 +507,60 @@
   const toBlob = (cv) => new Promise((res, rej) => cv.toBlob((b) => (b ? res(b) : rej(new Error('No se pudo crear la imagen.'))), 'image/png'));
 
   function receiptImage(r, withPrices) {
-    const wp = withPrices !== false && hasPrices(r);
+    const o = ropts(r, withPrices);
+    const k = o.compact ? 0.78 : 1;          // factor de tamaño: el recibo compacto es más estrecho y de letra más pequeña
+    const f = (n) => Math.round(n * k);
     const cv = canvasFor((ctx, { W, PAD, FONT, wrap, dry }) => {
-      let y = PAD;
+      let y = PAD * (o.compact ? 0.6 : 1);
       const txt = (s, font, color, x, align) => { if (dry) return; ctx.font = font; ctx.fillStyle = color; ctx.textAlign = align || 'left'; ctx.textBaseline = 'alphabetic'; ctx.fillText(s, x, y); };
-      const rule = () => { if (!dry) { ctx.strokeStyle = '#cbd5e1'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(PAD, y); ctx.lineTo(W - PAD, y); ctx.stroke(); } };
-      y += 34; txt(r.t === 'salida' ? 'PEDIDO' : 'ENTRADA', `800 38px ${FONT}`, '#0f766e', PAD); y += 14;
-      if (r.party) for (const l of wrap(r.party, `700 32px ${FONT}`, W - 2 * PAD)) { y += 40; txt(l, `700 32px ${FONT}`, '#0f172a', PAD); }
-      y += 36; txt(dateText(), `500 26px ${FONT}`, '#475569', PAD); y += 22; rule(); y += 10;
-      const qx = W - PAD - (wp ? 220 : 0);
-      for (const x of r.snapshot) {
-        const lines = wrap(nameOf(x.p), `650 30px ${FONT}`, (wp ? qx - PAD - 160 : W - 2 * PAD - 150));
-        const lt = lineTotal(x);
-        const top = y;
-        lines.forEach((l, i) => { y += 40; txt(l, `650 30px ${FONT}`, '#0f172a', PAD); });
-        const q = wp && lt !== null ? `${fmt(x.n)} × ${fmt(x.price)}` : `${fmt(x.n)}`;
-        const saved = y; y = top + 40;
-        txt(q, `700 30px ${FONT}`, '#0f172a', wp ? qx + 10 : W - PAD, wp ? 'right' : 'right');
-        if (wp) txt(lt !== null ? fmt(lt) : '—', `700 30px ${FONT}`, '#0f172a', W - PAD, 'right');
-        y = saved + 16; rule(); y += 10;
+      const rule = () => { if (!dry) { ctx.strokeStyle = '#cbd5e1'; ctx.lineWidth = o.compact ? 1 : 2; ctx.beginPath(); ctx.moveTo(PAD, y); ctx.lineTo(W - PAD, y); ctx.stroke(); } };
+      const LH = f(40);
+      y += f(34); txt(r.t === 'salida' ? 'PEDIDO' : 'ENTRADA', `800 ${f(38)}px ${FONT}`, '#0f766e', PAD);
+      if (o.compact && (r.party || o.date)) {
+        const l = [r.party, o.date ? dateText() : ''].filter(Boolean).join(' · ');
+        for (const t of wrap(l, `600 ${f(28)}px ${FONT}`, W - 2 * PAD)) { y += f(36); txt(t, `600 ${f(28)}px ${FONT}`, '#334155', PAD); }
+        y += f(12);
+      } else {
+        y += 14;
+        if (r.party) for (const l of wrap(r.party, `700 ${f(32)}px ${FONT}`, W - 2 * PAD)) { y += f(40); txt(l, `700 ${f(32)}px ${FONT}`, '#0f172a', PAD); }
+        if (o.date) { y += f(36); txt(dateText(), `500 ${f(26)}px ${FONT}`, '#475569', PAD); }
+        y += 22;
       }
-      y += 44; txt('TOTAL POR CATEGORÍA', `800 26px ${FONT}`, '#0f766e', PAD);
-      const row = (name, text, ind, bold) => {
-        const f1 = `${bold ? 700 : 500} 28px ${FONT}`; const f2 = `700 28px ${FONT}`;
-        const gl = wrap(text, f2, 330);
+      rule(); y += o.compact ? 4 : 10;
+      const priceW = o.prices ? f(o.compact ? 150 : 220) : 0;
+      const qx = W - PAD - priceW;
+      for (const x of r.snapshot) {
+        const lt = lineTotal(x);
+        const qtxt = o.prices && lt !== null ? `${fmt(x.n)} × ${fmt(x.price)}` : `${fmt(x.n)}`;
+        const qW = f(o.compact ? 150 : 190);
+        const lines = wrap(itemName(x.p, o), `650 ${f(30)}px ${FONT}`, (o.prices ? qx - PAD - qW + f(40) : W - 2 * PAD - qW));
         const top = y;
-        wrap(name, f1, W - 2 * PAD - 360 - ind).forEach((l) => { y += 38; txt(l, f1, bold ? '#0f172a' : '#334155', PAD + ind); });
-        const end = y; y = top;
-        gl.forEach((l) => { y += 38; txt(l, f2, bold ? '#0f172a' : '#334155', W - PAD, 'right'); });
-        y = Math.max(y, end);
-      };
-      for (const g of groupTotals(r)) { row(g.name, g.text, 0, true); for (const sg of g.subs) row(sg.name, sg.text, 28, false); }
-      y += 12; rule(); y += 36; txt(`Total: ${fmt(r.snapshot.reduce((a, x) => a + x.n, 0))} unidades`, `600 28px ${FONT}`, '#334155', PAD);
-      if (wp) { y += 56; txt('TOTAL A PAGAR', `800 32px ${FONT}`, '#0f172a', PAD); txt(`${fmt(grand(r))} ${r.currency}`, `800 38px ${FONT}`, '#0f766e', W - PAD, 'right'); }
-      if (r.note) for (const l of wrap(r.note, `500 26px ${FONT}`, W - 2 * PAD)) { y += 40; txt(l, `500 26px ${FONT}`, '#475569', PAD); }
-      return y + PAD;
-    });
+        lines.forEach((l) => { y += LH - (o.compact ? 4 : 0); txt(l, `650 ${f(30)}px ${FONT}`, '#0f172a', PAD); });
+        const saved = y; y = top + LH - (o.compact ? 4 : 0);
+        txt(qtxt, `700 ${f(30)}px ${FONT}`, '#0f172a', o.prices ? qx + 10 : W - PAD, 'right');
+        if (o.prices) txt(lt !== null ? fmt(lt) : '—', `700 ${f(30)}px ${FONT}`, '#0f172a', W - PAD, 'right');
+        y = saved + (o.compact ? 6 : 16); if (!o.compact) { rule(); y += 10; }
+      }
+      if (o.compact) { rule(); y += 4; }
+      if (o.cats) {
+        y += f(o.compact ? 30 : 44); txt('TOTAL POR CATEGORÍA', `800 ${f(26)}px ${FONT}`, '#0f766e', PAD);
+        const row = (name, text, ind, bold) => {
+          const f1 = `${bold ? 700 : 500} ${f(28)}px ${FONT}`; const f2 = `700 ${f(28)}px ${FONT}`;
+          const gl = wrap(text, f2, W * 0.45);
+          const top = y;
+          wrap(name, f1, W - 2 * PAD - W * 0.47 - ind).forEach((l) => { y += f(38); txt(l, f1, bold ? '#0f172a' : '#334155', PAD + ind); });
+          const end = y; y = top;
+          gl.forEach((l) => { y += f(38); txt(l, f2, bold ? '#0f172a' : '#334155', W - PAD, 'right'); });
+          y = Math.max(y, end);
+        };
+        for (const g of groupTotals(r)) { row(g.name, g.text, 0, true); if (o.subs) for (const sg of g.subs) row(sg.name, sg.text, f(28), false); }
+        y += 8; rule();
+      }
+      if (o.units) { y += f(o.compact ? 34 : 36); txt(`Total: ${fmt(r.snapshot.reduce((a, x) => a + x.n, 0))} unidades`, `600 ${f(28)}px ${FONT}`, '#334155', PAD); }
+      if (o.prices) { y += f(o.compact ? 44 : 56); txt('TOTAL A PAGAR', `800 ${f(32)}px ${FONT}`, '#0f172a', PAD); txt(`${fmt(grand(r))} ${r.currency}`, `800 ${f(38)}px ${FONT}`, '#0f766e', W - PAD, 'right'); }
+      if (r.note) for (const l of wrap(r.note, `500 ${f(26)}px ${FONT}`, W - 2 * PAD)) { y += f(38); txt(l, `500 ${f(26)}px ${FONT}`, '#475569', PAD); }
+      return y + PAD * (o.compact ? 0.7 : 1);
+    }, o.compact ? 600 : 760);
     return toBlob(cv);
   }
 
@@ -572,30 +605,54 @@
     if (r.t === 'baja') return showBajaDone(r);
     const totalU = r.snapshot.reduce((a, x) => a + x.n, 0);
     const wp = hasPrices(r);
-    const html = `<div class="stack"><div class="issue ok"><b>Listo.</b> ${r.snapshot.length} producto${r.snapshot.length === 1 ? '' : 's'}, ${fmt(totalU)} unidades${r.party ? ` · ${esc(r.party)}` : ''}${wp ? `<br>Total: <b>${esc(money(grand(r)))}</b>` : ''}<br>${groupTotals(r).map((g) => `${esc(g.name)}: <b>${esc(g.text)}</b>${g.subs.map((sg) => `<br>&nbsp;&nbsp;${esc(sg.name)}: ${esc(sg.text)}`).join('')}`).join('<br>')}. Las existencias ya se actualizaron y el pedido quedó en Movimientos.</div>
-      ${wp ? '<label class="switch"><span class="sw-text">Mostrar precios en el recibo</span><input type="checkbox" id="dn-prices" checked></label>' : ''}
+    const pf = rprefs();
+    const sw = (id, label, on, hint) => `<label class="switch"><span class="sw-text">${label}${hint ? `<small>${hint}</small>` : ''}</span><input type="checkbox" id="${id}" ${on ? 'checked' : ''}></label>`;
+    const html = `<div class="stack"><div class="issue ok"><b>Listo.</b> ${r.snapshot.length} producto${r.snapshot.length === 1 ? '' : 's'}, ${fmt(totalU)} unidades${r.party ? ` · ${esc(r.party)}` : ''}${wp ? `<br>Total: <b>${esc(money(grand(r)))}</b>` : ''}. Las existencias ya se actualizaron y el pedido quedó en Movimientos.</div>
+      <div class="seg" id="dn-fmt"><button type="button" data-f="full" aria-pressed="${!pf.compact}">Completa</button><button type="button" data-f="compact" aria-pressed="${pf.compact}">Compacta</button></div>
+      <details class="card" ${''}><summary><b>Qué incluir en el recibo</b></summary><div class="stack" style="margin-top:8px">
+        ${wp ? sw('dn-prices', 'Precios y total a pagar', pf.prices) : ''}
+        ${sw('dn-cats', 'Totales por categoría', pf.cats)}
+        ${sw('dn-subs', 'Totales por subcategoría', pf.subs, 'Solo si están los totales por categoría')}
+        ${sw('dn-units', 'Total de unidades', pf.units)}
+        ${sw('dn-date', 'Fecha', pf.date)}
+        ${sw('dn-color', 'Color junto al nombre del producto', pf.color)}</div></details>
+      <div style="text-align:center"><img id="dn-prev" alt="Vista previa del recibo" style="max-width:100%;max-height:220px;border:1px solid var(--border,#ddd);border-radius:8px"></div>
       <button type="button" class="btn" data-dn="img">Compartir recibo (imagen)</button>
       <button type="button" class="btn secondary" data-dn="txt">Compartir como texto</button>
       <button type="button" class="btn secondary" data-dn="file">Compartir archivo de texto (.txt)</button>
-      <p class="muted small-text">La imagen se ve completa en WhatsApp, sin tener que bajar el texto.</p></div>`;
+      <p class="muted small-text">La imagen se ve completa en WhatsApp. Tus opciones se recuerdan para el próximo recibo.</p></div>`;
     return UI.modal({
       title: `${LABEL[r.t].name} registrada`, cls: 'center-dlg', html,
       actions: [{ id: 'cancel', label: 'Cerrar', kind: 'ghost' }],
       onOpen(d) {
+        const q = (s) => d.body.querySelector(s);
+        const cur = () => ({ compact: q('#dn-fmt [data-f=compact]').getAttribute('aria-pressed') === 'true', prices: q('#dn-prices') ? q('#dn-prices').checked : pf.prices, cats: q('#dn-cats').checked, subs: q('#dn-subs').checked, units: q('#dn-units').checked, date: q('#dn-date').checked, color: q('#dn-color').checked });
+        let url = null; let tk = 0;
+        const preview = async () => {
+          const my = ++tk;
+          const o = cur();
+          q('#dn-subs').disabled = !o.cats;
+          Settings.set('receiptPrefs', o).catch(() => {});
+          try { const bl = await receiptImage(r, o); if (my !== tk) return; if (url) URL.revokeObjectURL(url); url = URL.createObjectURL(bl); q('#dn-prev').src = url; } catch (_) { /* sin vista previa */ }
+        };
+        preview();
+        d.body.addEventListener('change', (e) => { if (e.target.matches('input[type=checkbox]')) preview(); });
         d.body.addEventListener('click', async (e) => {
+          const fb = e.target.closest('#dn-fmt [data-f]');
+          if (fb) { d.body.querySelectorAll('#dn-fmt [data-f]').forEach((x) => x.setAttribute('aria-pressed', String(x === fb))); preview(); return; }
           const b = e.target.closest('[data-dn]');
           if (!b) return;
-          const wpOn = !d.body.querySelector('#dn-prices') || d.body.querySelector('#dn-prices').checked;
+          const o = cur();
           const base = `${r.t === 'salida' ? 'pedido' : 'entrada'}${r.party ? '-' + r.party.toLowerCase().replace(/[^a-z0-9áéíóúñ]+/gi, '-').replace(/^-|-$/g, '') : ''}`;
           try {
             if (b.dataset.dn === 'img') {
-              const res = await shareBlob(await receiptImage(r, wpOn), `${base}.png`, 'image/png', 'Recibo');
+              const res = await shareBlob(await receiptImage(r, o), `${base}.png`, 'image/png', 'Recibo');
               if (res === 'downloaded') UI.toast('Se guardó la imagen en tu teléfono. Envíala desde WhatsApp › adjuntar › galería.');
             } else if (b.dataset.dn === 'file') {
-              const res = await shareBlob(new Blob([summaryText(r, wpOn)], { type: 'text/plain' }), `${base}.txt`, 'text/plain', 'Recibo');
+              const res = await shareBlob(new Blob([summaryText(r, o)], { type: 'text/plain' }), `${base}.txt`, 'text/plain', 'Recibo');
               if (res === 'downloaded') UI.toast('Se guardó el archivo en tu teléfono.');
             } else {
-              const text = summaryText(r, wpOn);
+              const text = summaryText(r, o);
               if (navigator.share) { try { await navigator.share({ text }); } catch (er) { if (!er || er.name !== 'AbortError') UI.toast('No se pudo abrir el menú de compartir.', 'error'); } }
               else { const ok = await UI.copyText(text); UI.toast(ok ? 'Resumen copiado. Pégalo en WhatsApp.' : 'No se pudo copiar el resumen.', ok ? 'ok' : 'error'); }
             }

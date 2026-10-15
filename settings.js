@@ -6,9 +6,9 @@
   const esc = (s) => UI.esc(s);
 
   const APP_ID = 'almacen-inventario';
-  const APP_VERSION = '1.5.0';
+  const APP_VERSION = '1.6.0';
   const BACKUP_SCHEMA = 2; // versión del formato de copia (coincide con la versión de la base de datos)
-  const LOCAL_ONLY_KEYS = ['lastBackupAt', 'syncState', 'carts']; // propios de cada teléfono: nunca viajan en copias
+  const LOCAL_ONLY_KEYS = ['lastBackupAt', 'syncState', 'carts', 'cloud']; // propios de cada teléfono: nunca viajan en copias
 
   const DEFAULTS = {
     theme: 'system',            // system | light | dark
@@ -19,12 +19,14 @@
     defaultStatus: 'active',    // active | all
     unknownQtyLabel: 'Pendiente de conteo',
     listPrefs: null,
+    receiptPrefs: null,         // opciones del recibo (compacto, totales…)
     lastBackupAt: null,
     quickSteps: [1, 5, 10, 12, 50], // botones rápidos del carrito (se editan en Configuración)
     customReasons: [],          // otros motivos de baja (se añaden en Configuración)
     heldOrders: [],             // pedidos apartados (viajan en la copia de seguridad: sus productos ya salieron del almacén)
     carts: null,                // carritos de entrada/salida sin confirmar (de este teléfono)
     syncState: null,            // datos de sincronización de ESTE teléfono (no se copia ni se comparte)
+    cloud: null,                // vinculación con la nube de ESTE teléfono (código y estado; nunca en copias)
   };
   const FONT_SIZES = [[90, 'Pequeño'], [100, 'Normal'], [115, 'Grande'], [130, 'Muy grande']];
 
@@ -254,7 +256,7 @@
         if (r.key === 'defaultStatus' && !['active', 'all'].includes(r.value)) continue;
         if (r.key === 'quickSteps' && !(Array.isArray(r.value) && r.value.length <= 8 && r.value.every((x) => isNum(x) && x > 0 && x <= 100000))) continue;
         if (r.key === 'customReasons' && !(Array.isArray(r.value) && r.value.length <= 20 && r.value.every((x) => typeof x === 'string' && x.length <= 60))) continue;
-        if (r.key === 'listPrefs' && r.value !== null && typeof r.value !== 'object') continue;
+        if ((r.key === 'listPrefs' || r.key === 'receiptPrefs') && r.value !== null && typeof r.value !== 'object') continue;
         clean.settings.push({ key: r.key, value: r.value });
       }
     }
@@ -290,6 +292,7 @@
     const rec = prepareRecords(clean);
     if (mode === 'replace') {
       await DB.replaceAll(rec, LOCAL_ONLY_KEYS);
+      if (globalThis.Cloud) await Cloud.onRestore();
       return { mode, products: rec.products.length, movements: rec.movements.length, photos: rec.photos.length };
     }
     const snap = await DB.exportSnapshot();
@@ -317,6 +320,7 @@
     const prodById = new Map(snap.products.map((p) => [p.id, p]));
     const photoById = new Map(snap.photos.map((ph) => [ph.productId, ph]));
     const lastMv = new Map();
+    const remoteMv = new Set(snap.movements.filter((m) => m.remote).map((m) => m.productId)); // unidos desde otro teléfono: el orden puede diferir
     for (const m of snap.movements) {
       const cur = lastMv.get(m.productId);
       if (!cur || m.createdAt > cur.createdAt) lastMv.set(m.productId, m);
@@ -337,7 +341,7 @@
       if (!p.hasPhoto && photoById.has(p.id)) add('warn', 'photo-flag', `«${p.name}» tiene una foto guardada pero no marcada.`, { type: 'fix-photo-flag', id: p.id });
       if (p.hasPhoto && photoById.has(p.id) && !p.thumb) add('warn', 'thumb-missing', `«${p.name}» no tiene miniatura.`, { type: 'make-thumb', id: p.id });
       const last = lastMv.get(p.id);
-      if (last && last.after !== null && p.quantity !== last.after) {
+      if (last && last.after !== null && !remoteMv.has(p.id) && p.quantity !== last.after) {
         add('warn', 'qty-mismatch', `La existencia de «${p.name}» (${p.quantity === null ? 'sin registrar' : Inventory.fmtNum(p.quantity)}) no coincide con su último movimiento (${Inventory.fmtNum(last.after)}). Registra un ajuste si no sabes por qué.`);
       }
     }
@@ -385,6 +389,7 @@
   }
 
   async function resetAll() {
+    if (globalThis.Cloud) await Cloud.forget(false); // primero se desvincula: así el borrado local nunca se propaga a la nube
     await DB.wipeAll();
     try { localStorage.removeItem('almacen-pref-theme'); localStorage.removeItem('almacen-pref-fontscale'); } catch (_) { /* nada */ }
     await load();
@@ -634,6 +639,8 @@
         <button type="button" class="btn" data-s="lists">Generar un listado</button>
       </div>
 
+      ${globalThis.Cloud ? Cloud.cardHtml() : ''}
+
       ${globalThis.Sync ? Sync.cardHtml() : ''}
 
       <div class="card cfg">
@@ -701,6 +708,9 @@
         else if (a === 'export') await UI.once('export', () => doExport(false));
         else if (a === 'share-backup') await UI.once('export', () => doExport(true));
         else if (a === 'import') await importFlow();
+        else if (a === 'cloud-link') { await Cloud.linkFlow(); render(); }
+        else if (a === 'cloud-now') await Cloud.syncNow();
+        else if (a === 'cloud-unlink') { await Cloud.unlinkFlow(); render(); }
         else if (a === 'sync-export') await Sync.openExport();
         else if (a === 'sync-import') await Sync.importFlow();
         else if (a === 'integrity') {

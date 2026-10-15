@@ -61,6 +61,19 @@ Configuración › «Precios por grupo»: agrupa los productos de la misma marca
 - Cambiar el **precio general** de una subcategoría/categoría ahora puede aplicarse a todos sus productos (casilla «Aplicarlo a todos los productos»).
 - El recibo (imagen, texto y .txt) incluye **TOTAL POR CATEGORÍA** y, debajo, por subcategoría (p. ej. «Tintes capilares: 40 tubos» › «Stereo: 17 tubos»).
 
+## Recibo configurable (v1.5.1)
+Al terminar una salida (o facturar un pedido apartado) el recibo se puede elegir **Completo** o **Compacto** (más estrecho, una línea por producto, mucho más corto) y marcar qué incluir: precios y total, totales por categoría, totales por subcategoría, total de unidades, fecha y color junto al nombre. Hay vista previa y la app recuerda tus opciones. Vale para la imagen, el texto y el archivo .txt.
+
 ## Notas
 - Cantidad vacía = «sin registrar» (no es 0). Las cantidades aproximadas se marcan con ≈ y no se mezclan con las confirmadas.
 - No genera APK. Es una PWA instalable desde Chrome.
+
+## Versión 1.6.0 — Sincronización automática por internet (Supabase)
+
+- Nuevo archivo `cloud.js` (hay que subirlo junto a los demás; también cambian `database.js`, `settings.js`, `app.js`, `index.html`, `styles.css` y `service-worker.js`).
+- Sin cuentas ni contraseñas: cada teléfono se vincula una sola vez con su **código de vinculación** (Configuración › Sincronización por internet). El servidor solo guarda un hash del código; sin código no se puede leer ni escribir nada.
+- Funciona sin internet: todo se guarda en el teléfono y lo pendiente se envía solo al volver la conexión (se ve el número de cambios pendientes en el icono ☁ de la cabecera).
+- Las existencias se sincronizan por **movimientos** (cada uno se aplica una sola vez como suma o resta), no copiando la cantidad. Dos teléfonos que venden a la vez no se pisan; si por vender lo mismo sin conexión queda negativo, se avisa.
+- Categorías, productos, precios y pedidos apartados: gana el cambio más reciente. Las fotos viajan aparte.
+- Unirse a la nube **reemplaza** los datos del teléfono (antes descarga una copia automática). Restaurar una copia de seguridad desvincula el teléfono para no pisar la nube. Restablecer la aplicación nunca borra la nube.
+- Nota: el plan gratuito de Supabase pausa el proyecto tras 7 días sin uso; se reactiva desde el panel de Supabase.
